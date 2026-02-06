@@ -4,6 +4,14 @@ This repository contains a practical data-cleaning pipeline for the Care4Minds/C
 
 The raw source files are pipe-delimited (|) and may contain malformed rows (“bad lines”) caused by embedded separators, unbalanced quotes, or extra trailing fields. The pipeline separates good/bad rows, repairs common issues using streaming text processing (no pandas for corrupted files), and merges everything back into final *_final.csv.
 
+(2026.02.05)**Current final version data**: 
+    └── output/
+        ├── C4MPatient_clean_1_31.csv
+        ├── C4MEncounterDiagnosis_clean_1_31.csv
+        └── C4MMedication_clean_1_31.csv
+
+
+Project layout:
 BiostatisticsPracticum_Depression/
 ├── src/
 │   ├── main.py
