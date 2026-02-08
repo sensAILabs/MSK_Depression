@@ -323,6 +323,3 @@ def summarize_classification(df: pd.DataFrame, class_col: str = "med_class", top
 
 
 
-
-# acute_mask = medication["impute_startdate_ok"] & medication["StartDate"].isna() & medication["DateCreated"].notna()
-# medication.loc[acute_mask, "StartDate"] = medication.loc[acute_mask, "DateCreated"]

@@ -108,18 +108,6 @@ def clean_medication_bad_text(
     print("[Medication] Lines written:", n_written)
     return None
 
-
-clean_medication_bad_text(
-    "../data/output/medication_bad.csv",
-    "../data/output/medication_bad_cleaned.csv"
-)
-
-clean_encounter_dx_bad_text(
-    "../data/output/encounter_dx_bad.csv",
-    "../data/output/encounter_dx_bad_cleaned.csv"
-)
-
-
 # checking function for bad_line_cleaned
 # output bad_line_cleaned and still_bad_lines
 def filter_bad_cleaned_keep_only_readable(
@@ -217,26 +205,6 @@ def filter_bad_cleaned_keep_only_readable(
     
     return None
 
-filter_bad_cleaned_keep_only_readable(
-    good_path="../data/output/medication_good.csv",
-    bad_cleaned_path="../data/output/medication_bad_cleaned.csv",
-    out_cleaned_path="../data/output/medication_bad_cleaned_filtered.csv",
-    out_still_bad_path="../data/output/medication_bad_still_unreadable.csv",
-    sep="|",
-    skip_first_line=False,
-    label="medication"
-)
-
-filter_bad_cleaned_keep_only_readable(
-    good_path="../data/output/encounter_dx_good.csv",
-    bad_cleaned_path="../data/output/encounter_dx_bad_cleaned.csv",
-    out_cleaned_path="../data/output/encounter_dx_bad_cleaned_filtered.csv",
-    out_still_bad_path="../data/output/encounter_dx_bad_still_unreadable.csv",
-    sep="|",
-    skip_first_line=False,
-    label="encounter_dx"
-)
-
 # dealing with still-bad lines
 def fix_encounter_dx_still_bad_lines(
     input_path: str,
@@ -284,15 +252,6 @@ def fix_encounter_dx_still_bad_lines(
 
     return str(output_path), n_written
 
-out_path, n = fix_encounter_dx_still_bad_lines(
-    input_path="../data/output/encounter_dx_bad_still_unreadable.csv",
-    output_path="../data/output/encounter_dx_bad_still_unreadable_fixed.csv",
-    expected_n_cols=13,
-)
-
-print(f"Fixed still-bad encounter_dx lines: {n}")
-print(f"Output written to: {out_path}")
-
 def fix_medication_still_bad_lines(
     input_path: str,
     output_path: str,
@@ -337,16 +296,6 @@ def fix_medication_still_bad_lines(
             n_written += 1
 
     return str(output_path), n_written
-
-out_path, n = fix_medication_still_bad_lines(
-    input_path="../data/output/medication_bad_still_unreadable.csv",
-    output_path="../data/output/medication_bad_still_unreadable_fixed.csv",
-)
-
-print(f"Fixed medication still-bad lines written: {n}")
-print(f"Output file: {out_path}")
-
-
 
 # merge good + cleaned_bad_filtered + still_bad -> final
 def merge_good_cleaned_and_still_bad(
@@ -428,113 +377,5 @@ def merge_good_cleaned_and_still_bad(
     )
 
     return merged
-# def merge_good_and_cleaned_bad(
-#     good_path: str,
-#     bad_cleaned_path: str,
-#     out_path: str,
-#     sep: str = "|",
-#     label: str = "",
-# ) -> pd.DataFrame:
-#     """
-#     Merge a 'good' CSV (with header) and a 'cleaned bad' CSV (no header)
-#     into one dataset using the good file's schema.
-
-#     Parameters
-#     ----------
-#     good_path : str
-#         Path to the good CSV (has header).
-#     bad_cleaned_path : str
-#         Path to the cleaned bad CSV (NO header).
-#     out_path : str
-#         Output path for merged CSV.
-#     sep : str
-#         Field separator (default '|').
-#     label : str
-#         Label for logging (e.g. 'medication', 'encounter_dx').
-
-#     Returns
-#     -------
-#     pd.DataFrame
-#         The merged DataFrame.
-#     """
-#     prefix = f"[{label}] " if label else ""
-
-#     good_path = Path(good_path)
-#     bad_cleaned_path = Path(bad_cleaned_path)
-#     out_path = Path(out_path)
-
-#     if not good_path.exists():
-#         raise FileNotFoundError(f"{prefix}Good file not found: {good_path.resolve()}")
-#     if not bad_cleaned_path.exists():
-#         raise FileNotFoundError(f"{prefix}Bad cleaned file not found: {bad_cleaned_path.resolve()}")
-
-#     # 1) Read good (has header)
-#     good = pd.read_csv(
-#         good_path,
-#         sep=sep,
-#         dtype=str,
-#         keep_default_na=False
-#     )
-#     print(f"{prefix}Good shape: {good.shape} ({good_path.name})")
-
-#     # 2) Read bad_cleaned (NO header), force schema from good
-#     bad_cleaned = pd.read_csv(
-#         bad_cleaned_path,
-#         sep=sep,
-#         header=None,
-#         names=good.columns.tolist(),
-#         dtype=str,
-#         keep_default_na=False
-#     )
-#     print(f"{prefix}Bad cleaned shape: {bad_cleaned.shape} ({bad_cleaned_path.name})")
-
-#     # 3) Concat
-#     merged = pd.concat([good, bad_cleaned], ignore_index=True)
-#     print(f"{prefix}Merged shape: {merged.shape}")
-
-#     # 4) Write output
-#     out_path.parent.mkdir(parents=True, exist_ok=True)
-#     merged.to_csv(out_path, sep=sep, index=False)
-#     print(f"{prefix}Merged data written to: {out_path.resolve()}")
-
-#     # 5) Safety check (fail loudly if schema mismatched)
-#     assert list(good.columns) == list(bad_cleaned.columns), (
-#         f"{prefix}Schema mismatch between good and bad_cleaned"
-#     )
-
-#     return merged
-
-# encounter_dx_final = merge_good_and_cleaned_bad(
-#     good_path="../data/output/encounter_dx_good.csv",
-#     bad_cleaned_path="../data/output/encounter_dx_bad_cleaned_filtered.csv",
-#     out_path="../data/output/encounter_dx_final.csv",
-#     sep="|",
-#     label="Encounter_dx")
-
-
-# medication_final = merge_good_and_cleaned_bad(
-#     good_path="../data/output/medication_good.csv",
-#     bad_cleaned_path="../data/output/medication_bad_cleaned_filtered.csv",
-#     out_path="../data/output/medication_final.csv",
-#     sep="|",
-#     label="Medication")
-
-encounter_dx_final = merge_good_cleaned_and_still_bad(
-    good_path="../data/output/encounter_dx_good.csv",
-    bad_cleaned_path="../data/output/encounter_dx_bad_cleaned_filtered.csv",
-    still_bad_fixed_path="../data/output/encounter_dx_bad_still_unreadable_fixed.csv",
-    out_path="../data/output/encounter_dx_final.csv",
-    sep="|",
-    label="Encounter_dx"
-)
-
-medication_final = merge_good_cleaned_and_still_bad(
-    good_path="../data/output/medication_good.csv",
-    bad_cleaned_path="../data/output/medication_bad_cleaned_filtered.csv",
-    still_bad_fixed_path="../data/output/medication_bad_still_unreadable_fixed.csv",
-    out_path="../data/output/medication_final.csv",
-    sep="|",
-    label="Medication"
-)
 
 
