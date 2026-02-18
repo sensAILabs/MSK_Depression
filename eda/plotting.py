@@ -133,7 +133,7 @@ def barplot_msk_type_percentage(df, type_col="msk_type"):
 
 
 def plot_msk_type_by_sex_percent(df,type_col="msk_type",sex_col="Sex",
-                                 order=("co_onset", "msk_comorbidity", "msk_only", "msk_pre_existing"),
+                                 order=("co_onset", "msk_comorbidity", "msk_only", "other_pre_existing_then_msk"),
                                  figsize=(9, 5),rotate=30):
     d = df[[type_col, sex_col]].dropna().copy()
     d[sex_col] = d[sex_col].astype(str).str.upper()
