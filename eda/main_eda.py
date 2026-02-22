@@ -5,15 +5,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-from clinical_definitions import ICD9_RANGES, CONDITION_DRUG_KEYWORDS
-from data_processing import (
+from eda.clinical_definitions import ICD9_RANGES, CONDITION_DRUG_KEYWORDS
+from eda.data_processing import (
     build_patient_info,
     add_patient_icd9_lists,
     build_msk_type_table,
     build_analysis_df_msk_only,
 )
-from duration import compute_condition_duration
-from plotting import *
+from eda.duration import compute_condition_duration
+from eda.plotting import *
 
 def save_fig(fig, path):
     path.parent.mkdir(parents=True, exist_ok=True)

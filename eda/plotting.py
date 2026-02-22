@@ -4,7 +4,7 @@ import numpy as np
 from matplotlib.patches import Patch
 
 
-from clinical_definitions import ICD9_RANGES
+from eda.clinical_definitions import ICD9_RANGES
 
 #EDA plots
 def step5_plot_msk_comorbidities(df, patient_col="Patient_ID"):
@@ -38,16 +38,17 @@ def step5_plot_msk_multimorbidity(df, count_col="comorbidity_count"):
 
 
 def step5_plot_msk_age_groups(df):
-    bins = [0, 19, 30, 40, 50, 60, 70, 80, 120]
-    labels = ["0-18", "19-29", "30-39", "40-49","50-59", "60-69", "70-79", "80+"]
+    bins = list(range(0, 100, 5)) + [np.inf]
+    labels = [f"{i}-{i+4}" for i in range(0, 95, 5)] + ["95+"]
     age_grp = pd.cut(df["Age"], bins=bins, labels=labels, right=False)
     pct = age_grp.value_counts(normalize=True).sort_index() * 100
-    ax = pct.plot(kind="bar")
+    ax = pct.plot(kind="bar", figsize=(12,6))
+    ax.set_ylim(0, 12)
     plt.xlabel("Age group (years)")
     plt.ylabel("Percentage of MSK patients (%)")
     plt.title("Age distribution of MSK patients")
-    for i, v in enumerate(pct.values):
-        ax.text(i, v + 0.5, f"{v:.1f}%", ha="center")
+    for container in ax.containers:
+        ax.bar_label(container, fmt="%.1f%%", padding=8)
     plt.tight_layout()
     return plt.gcf()
 
@@ -66,8 +67,8 @@ def step5_plot_msk_sex(df):
 
 
 def step5_plot_msk_age_sex_patient(df, patient_col="Patient_ID", age_col="Age", sex_col="Sex"):
-    bins   = [0, 19, 30, 40, 50, 60, 70, 80, 120]
-    labels = ["0-18", "19-29", "30-39", "40-49","50-59", "60-69", "70-79", "80+"]
+    bins = list(range(0, 100, 5)) + [np.inf]
+    labels = [f"{i}-{i+4}" for i in range(0, 95, 5)] + ["95+"]
     # patient level: one row per patient
     d = ( df[[patient_col, age_col, sex_col]]
         .drop_duplicates(patient_col)
@@ -75,13 +76,21 @@ def step5_plot_msk_age_sex_patient(df, patient_col="Patient_ID", age_col="Age", 
         .copy())
     d["AgeGroup"] = pd.cut(d[age_col], bins=bins, labels=labels, right=False)
     pct = pd.crosstab(d["AgeGroup"], d[sex_col], normalize="columns") * 100
-    ax = pct.plot(kind="bar")
+    ax = pct.plot(kind="bar", figsize=(12, 6), width=0.8)
+    ax.set_ylim(0, 13)
     plt.xlabel("Age group")
     plt.ylabel("Percentage of MSK patients (%)")
     plt.title("Age × Sex distribution of MSK patients")
     plt.xticks(rotation=45, ha="right")
-    for c in ax.containers:
-        ax.bar_label(c, fmt="%.1f%%", padding=2)
+    for j, container in enumerate(ax.containers):
+        x_offset = -0.08 if j % 2 == 0 else 0.08     
+        y_offset = 0.10 if j % 2 == 0 else 0.22      
+        for bar in container:
+            h = bar.get_height()
+            if not np.isfinite(h) or h <= 0:
+                continue
+            x = bar.get_x() + bar.get_width() / 2.0
+            ax.text(x + x_offset,h + y_offset,f"{h:.2f}%",ha="center",va="bottom",fontsize=6)
     plt.tight_layout()
     return plt.gcf()
 

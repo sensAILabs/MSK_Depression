@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-from clinical_definitions import ICD9_RANGES
+from eda.clinical_definitions import ICD9_RANGES
 
 #step 1 build patient info
 def build_patient_info(encounter, patient,
