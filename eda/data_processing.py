@@ -85,7 +85,7 @@ def build_msk_type_table(enc_icd9,ICD9_RANGES,patient_col="Patient_ID",
     # mutually exclusive msk_type (based on first overall encounter)
     m[out_col] = "unknown"
     m.loc[m["has_msk_on_first"] & ~m["has_non_ever"], out_col] = "msk_only"
-    m.loc[m["has_msk_on_first"] & m["has_non_on_first"], out_col] = "co_onset"
+    m.loc[m["has_msk_on_first"] & m["has_non_on_first"], out_col] = "co_occurrence"
     m.loc[~m["has_msk_on_first"] & m["has_msk_after_first"], out_col] = "other_pre_existing_then_msk"
     m.loc[m["has_msk_on_first"] & ~m["has_non_on_first"] & m["has_non_after_first"], out_col] = "msk_comorbidity"
     # only keep msk patient

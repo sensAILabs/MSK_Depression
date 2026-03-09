@@ -8,7 +8,7 @@ from eda.clinical_definitions import ICD9_RANGES
 
 #EDA plots
 def step5_plot_msk_comorbidities(df, patient_col="Patient_ID"):
-    types = ["cancer", "endocrine", "mental", "circulatory", "respiratory", "genitourinary"]
+    types = ["cancer", "endocrine", "mental", "cardiovascular", "respiratory", "genitourinary"]
     pt = df.drop_duplicates(patient_col).copy()
     n = len(pt)
     prevalence = {t: pt["type list"].str.split(",").apply(lambda x: t in x).sum() / n * 100
@@ -142,7 +142,7 @@ def barplot_msk_type_percentage(df, type_col="msk_type"):
 
 
 def plot_msk_type_by_sex_percent(df,type_col="msk_type",sex_col="Sex",
-                                 order=("co_onset", "msk_comorbidity", "msk_only", "other_pre_existing_then_msk"),
+                                 order=("co_occurrence", "msk_comorbidity", "msk_only", "other_pre_existing_then_msk"),
                                  figsize=(9, 5),rotate=30):
     d = df[[type_col, sex_col]].dropna().copy()
     d[sex_col] = d[sex_col].astype(str).str.upper()
