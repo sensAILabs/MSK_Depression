@@ -31,7 +31,7 @@ def import_ml_script(script_path: Path) -> Any:
     if not script_path.exists():
         raise FileNotFoundError(f"Model script not found: {script_path}")
 
-    spec = importlib.util.spec_from_file_location("ml_llm_module", script_path)
+    spec = importlib.util.spec_from_file_location("ml_modeling_module", script_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not import model script: {script_path}")
 
@@ -131,8 +131,6 @@ def assign_error_quartiles_and_applicability(
         Q2 + Q3  -> Intermediate applicability
         Q4       -> Low applicability
 
-    Boundary values are retained as patient-level columns for transparency.
-    Ties at a boundary may cause quartile counts to differ slightly from 25%.
     """
     df = patient_pred.copy()
 
@@ -260,6 +258,7 @@ def create_error_cutoff_table(cutoffs: dict[str, float]) -> pd.DataFrame:
         }
     ])
 
+
 def add_profile_completeness(
     df_1yr: pd.DataFrame,
     X: pd.DataFrame,
@@ -267,59 +266,105 @@ def add_profile_completeness(
     raw_feature_cols: list[str],
     model_feature_cols: list[str],
 ) -> pd.DataFrame:
-    """Attach selected patient characteristics and feature-completeness counts."""
+    """
+    Attach current patient characteristics and feature-completeness counts.
+
+    The names here match analysis_df_1year.csv and the current 42-predictor
+    final model. No obsolete LLM medication-category fields are requested.
+    """
     df_profile = df_1yr.copy().reset_index(drop=True)
     df_profile["Patient_ID"] = df_profile["Patient_ID"].astype(str)
 
     raw_available = [
-        col for col in raw_feature_cols if col in df_profile.columns
+        col
+        for col in raw_feature_cols
+        if col in df_profile.columns
     ]
 
     if raw_available:
         raw_values = df_profile[raw_available].copy()
         missing_mask = raw_values.apply(
-            lambda col: col.astype(str).str.strip().isin(
-                ["", "nan", "NaN", "None", "NA", "<NA>"]
+            lambda col: (
+                col.astype("string")
+                .str.strip()
+                .isin(
+                    [
+                        "",
+                        "nan",
+                        "NaN",
+                        "None",
+                        "NA",
+                        "<NA>",
+                    ]
+                )
             )
         )
-        df_profile["raw_missing_feature_count"] = missing_mask.sum(axis=1)
+        df_profile["raw_missing_feature_count"] = (
+            missing_mask.sum(axis=1)
+        )
         df_profile["raw_available_feature_count"] = (
-            len(raw_available) - df_profile["raw_missing_feature_count"]
+            len(raw_available)
+            - df_profile["raw_missing_feature_count"]
         )
     else:
         df_profile["raw_missing_feature_count"] = 0
         df_profile["raw_available_feature_count"] = 0
 
-    X_model = X[model_feature_cols].copy().reset_index(drop=True)
-    X_model = X_model.apply(pd.to_numeric, errors="coerce").fillna(0)
+    X_model = (
+        X[model_feature_cols]
+        .copy()
+        .reset_index(drop=True)
+        .apply(
+            pd.to_numeric,
+            errors="coerce",
+        )
+    )
 
-    df_profile["model_nonzero_feature_count"] = (X_model != 0).sum(axis=1)
-    df_profile["model_zero_feature_count"] = (X_model == 0).sum(axis=1)
+    if X_model.isna().any().any():
+        missing = X_model.isna().sum()
+        missing = missing[missing.gt(0)]
+        raise ValueError(
+            "The current final-model matrix contains missing values:\n"
+            + missing.to_string()
+        )
 
-    keep_cols = [
+    df_profile["model_nonzero_feature_count"] = (
+        X_model.ne(0).sum(axis=1)
+    )
+    df_profile["model_zero_feature_count"] = (
+        X_model.eq(0).sum(axis=1)
+    )
+
+    current_profile_columns = [
         "Patient_ID",
         "Age",
         "Sex",
-        "window_days",
-        "Mental_Diagnosis_count",
+        "Mental_diagnosis_count",
         "Recent_30d_mental_visit",
-        "Overall_Mental_group",
-        "Pre_existing_condition_count",
+        "Repeated_same_mental_diagnosis",
+        "Unique_mental_diagnosis_count",
+        "Preexisting_condition_count",
         "Multimorbidity_count",
-        "n_mental_drugs",
-        "n_pain_drugs",
-        "med_addition_count",
-        "med_discontinuation_count",
-        "mental_pain_overlap_ratio",
+        "Mental_medication_count",
+        "Pain_medication_count",
+        "Other_medication_count",
+        "Time_to_first_mental_medication",
+        "Time_to_first_pain_medication",
+        "Mental_pain_overlap_ratio",
         "raw_missing_feature_count",
         "raw_available_feature_count",
         "model_nonzero_feature_count",
         "model_zero_feature_count",
     ]
-    keep_cols = [col for col in keep_cols if col in df_profile.columns]
+
+    current_profile_columns = [
+        col
+        for col in current_profile_columns
+        if col in df_profile.columns
+    ]
 
     return patient_pred.merge(
-        df_profile[keep_cols],
+        df_profile[current_profile_columns],
         on="Patient_ID",
         how="left",
         validate="one_to_one",
@@ -495,15 +540,18 @@ def create_progressive_error_removal_table(
     patient_pred: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-
     Progressively remove 5%, 10%, 15%, and 20% of test patients with the
     largest observed prediction errors, then recalculate performance among
     the remaining patients.
 
     Exact rank-based removal avoids unpredictable sample sizes when several
-    patients share the same prediction-error value. This remains a
-    retrospective held-out-test-set analysis because the ranking uses the
-    observed outcome.
+    patients share the same prediction-error value.
+
+    IMPORTANT:
+    This is a retrospective held-out-test-set sensitivity analysis only.
+    prediction_error = |observed outcome - predicted probability| requires the
+    observed one-year outcome and therefore cannot be used prospectively to
+    identify patients for exclusion or applicability screening.
     """
     sorted_df = patient_pred.sort_values(
         ["prediction_error", "Patient_ID"],
@@ -683,6 +731,7 @@ def create_final_feature_group_comparison(
     return comparison
 
 
+
 def compare_numeric_profiles(
     patient_pred: pd.DataFrame,
     group_a_name: str,
@@ -690,19 +739,26 @@ def compare_numeric_profiles(
     group_b_name: str,
     group_b_mask: pd.Series,
 ) -> pd.DataFrame:
-    """Compare selected numeric characteristics between two patient groups."""
+    """
+    Compare current numeric characteristics between two patient groups.
+
+    Mann-Whitney U tests are descriptive and exploratory. They do not alter
+    the final model or define the applicability groups.
+    """
     numeric_cols = [
         "Age",
-        "window_days",
-        "Mental_Diagnosis_count",
+        "Mental_diagnosis_count",
         "Recent_30d_mental_visit",
-        "Pre_existing_condition_count",
+        "Repeated_same_mental_diagnosis",
+        "Unique_mental_diagnosis_count",
+        "Preexisting_condition_count",
         "Multimorbidity_count",
-        "n_mental_drugs",
-        "n_pain_drugs",
-        "med_addition_count",
-        "med_discontinuation_count",
-        "mental_pain_overlap_ratio",
+        "Mental_medication_count",
+        "Pain_medication_count",
+        "Other_medication_count",
+        "Time_to_first_mental_medication",
+        "Time_to_first_pain_medication",
+        "Mental_pain_overlap_ratio",
         "raw_missing_feature_count",
         "raw_available_feature_count",
         "model_nonzero_feature_count",
@@ -710,8 +766,11 @@ def compare_numeric_profiles(
         "pred_prob",
         "prediction_error",
     ]
+
     numeric_cols = [
-        col for col in numeric_cols if col in patient_pred.columns
+        col
+        for col in numeric_cols
+        if col in patient_pred.columns
     ]
 
     rows = []
@@ -721,6 +780,7 @@ def compare_numeric_profiles(
             patient_pred.loc[group_a_mask, col],
             errors="coerce",
         ).dropna()
+
         group_b = pd.to_numeric(
             patient_pred.loc[group_b_mask, col],
             errors="coerce",
@@ -739,25 +799,55 @@ def compare_numeric_profiles(
         except ValueError:
             p_value = np.nan
 
-        rows.append({
-            "Feature": col,
-            f"{group_a_name}_N": len(group_a),
-            f"{group_a_name}_Mean": group_a.mean() if len(group_a) else np.nan,
-            f"{group_a_name}_SD": (
-                group_a.std(ddof=1) if len(group_a) > 1 else np.nan
-            ),
-            f"{group_b_name}_N": len(group_b),
-            f"{group_b_name}_Mean": group_b.mean() if len(group_b) else np.nan,
-            f"{group_b_name}_SD": (
-                group_b.std(ddof=1) if len(group_b) > 1 else np.nan
-            ),
-            f"Mean_Difference_{group_a_name}_Minus_{group_b_name}": (
-                group_a.mean() - group_b.mean()
-                if len(group_a) and len(group_b) else np.nan
-            ),
-            "Mann_Whitney_U_P_value": p_value,
-            "P_value_formatted": _format_p_value(p_value),
-        })
+        rows.append(
+            {
+                "Feature": col,
+                f"{group_a_name}_N": len(group_a),
+                f"{group_a_name}_Mean": (
+                    group_a.mean()
+                    if len(group_a)
+                    else np.nan
+                ),
+                f"{group_a_name}_SD": (
+                    group_a.std(ddof=1)
+                    if len(group_a) > 1
+                    else np.nan
+                ),
+                f"{group_a_name}_Median": (
+                    group_a.median()
+                    if len(group_a)
+                    else np.nan
+                ),
+                f"{group_b_name}_N": len(group_b),
+                f"{group_b_name}_Mean": (
+                    group_b.mean()
+                    if len(group_b)
+                    else np.nan
+                ),
+                f"{group_b_name}_SD": (
+                    group_b.std(ddof=1)
+                    if len(group_b) > 1
+                    else np.nan
+                ),
+                f"{group_b_name}_Median": (
+                    group_b.median()
+                    if len(group_b)
+                    else np.nan
+                ),
+                (
+                    f"Mean_Difference_"
+                    f"{group_a_name}_Minus_{group_b_name}"
+                ): (
+                    group_a.mean() - group_b.mean()
+                    if len(group_a) and len(group_b)
+                    else np.nan
+                ),
+                "Mann_Whitney_U_P_value": p_value,
+                "P_value_formatted": _format_p_value(
+                    p_value
+                ),
+            }
+        )
 
     return pd.DataFrame(rows)
 
@@ -846,149 +936,356 @@ def plot_prediction_type_distribution(
     plt.close()
 
 
+
 def run_sensitivity_analysis(
-    ml_script: Path,
-    input_path: Path,
+    ml_script_path: Path,
+    ml_table_dir: Path,
     table_dir: Path,
     figure_dir: Path,
 ) -> None:
-    table_dir.mkdir(parents=True, exist_ok=True)
-    figure_dir.mkdir(parents=True, exist_ok=True)
+    """
+    Run sensitivity analyses using the frozen held-out test predictions from
+    the current ml_modeling.py pipeline.
 
-    ml = import_ml_script(ml_script)
+    Current canonical ML outputs:
+      - 04_final_model_test_predictions.csv
+      - 04_final_model_test_performance.csv
+      - 05_final_model_features.csv
 
-    print("Input:", input_path)
-    print("Model script:", ml_script)
-    print("Table directory:", table_dir)
-    print("Figure directory:", figure_dir)
-    print("Classification threshold:", THRESHOLD)
+    The exact test feature matrix and raw test rows are reconstructed with
+    the same analysis file, random seed, test fraction, and stratification
+    used by ml_modeling.py. Predictions are never refitted or changed.
+    """
+    table_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    figure_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    df = ml.load_data(input_path)
-    df_1yr = ml.build_1yr_patient_dataset(df)
-    X, y, feature_sets = ml.build_feature_matrix(df_1yr)
+    ml = import_ml_script(
+        ml_script_path
+    )
 
-    X_train, X_test, y_train, y_test = train_test_split(
+    prediction_path = (
+        ml_table_dir
+        / "04_final_model_test_predictions.csv"
+    )
+    performance_path = (
+        ml_table_dir
+        / "04_final_model_test_performance.csv"
+    )
+    final_feature_path = (
+        ml_table_dir
+        / "05_final_model_features.csv"
+    )
+
+    required_paths = [
+        prediction_path,
+        performance_path,
+        final_feature_path,
+    ]
+
+    missing_paths = [
+        path
+        for path in required_paths
+        if not path.is_file()
+    ]
+
+    if missing_paths:
+        raise FileNotFoundError(
+            "Run the current ml_modeling.py first. Missing outputs: "
+            + ", ".join(
+                str(path)
+                for path in missing_paths
+            )
+        )
+
+    print(
+        "Model script:",
+        ml_script_path,
+    )
+    print(
+        "Canonical ML table directory:",
+        ml_table_dir,
+    )
+    print(
+        "Sensitivity table directory:",
+        table_dir,
+    )
+    print(
+        "Sensitivity figure directory:",
+        figure_dir,
+    )
+
+    raw_predictions = pd.read_csv(
+        prediction_path,
+        dtype={
+            "Patient_ID": "string",
+        },
+    )
+
+    required_prediction_columns = {
+        "Patient_ID",
+        "Observed_MSK_within_1year",
+        "Predicted_probability",
+        "Predicted_class",
+    }
+
+    missing_prediction_columns = (
+        required_prediction_columns
+        - set(
+            raw_predictions.columns
+        )
+    )
+
+    if missing_prediction_columns:
+        raise ValueError(
+            "Current final prediction file is missing columns: "
+            + ", ".join(
+                sorted(
+                    missing_prediction_columns
+                )
+            )
+        )
+
+    if raw_predictions["Patient_ID"].duplicated().any():
+        raise ValueError(
+            "Patient_ID is duplicated in "
+            "04_final_model_test_predictions.csv."
+        )
+
+    final_feature_table = pd.read_csv(
+        final_feature_path
+    )
+
+    if "Feature" not in final_feature_table.columns:
+        raise ValueError(
+            "05_final_model_features.csv must contain a Feature column."
+        )
+
+    final_cols = (
+        final_feature_table["Feature"]
+        .astype(str)
+        .tolist()
+    )
+
+    if not final_cols:
+        raise ValueError(
+            "The final-model feature list is empty."
+        )
+
+    performance = pd.read_csv(
+        performance_path
+    )
+
+    if performance.empty:
+        raise ValueError(
+            "04_final_model_test_performance.csv is empty."
+        )
+
+    final_feature_set = str(
+        performance.iloc[0]["Feature_Set"]
+    )
+    best_model_name = str(
+        performance.iloc[0]["Model"]
+    )
+
+    # Reconstruct the exact held-out test set from the frozen ML definitions.
+    analysis = ml.load_analysis_data(
+        ml.INPUT_FILE
+    )
+
+    X, y, patient_ids = ml.prepare_feature_matrix(
+        analysis
+    )
+
+    (
+        _X_train,
+        X_test,
+        _y_train,
+        y_test,
+        _patient_ids_train,
+        patient_ids_test,
+    ) = train_test_split(
         X,
         y,
+        patient_ids,
         test_size=ml.TEST_SIZE,
         random_state=ml.SEED,
         stratify=y,
     )
 
-    algorithm_selection_feature_set = "06_Final_WithInteraction"
-    if algorithm_selection_feature_set not in feature_sets:
-        raise KeyError(
-            f"Feature set not found: {algorithm_selection_feature_set}"
+    X_test = X_test.reset_index(
+        drop=True
+    )
+    y_test = y_test.reset_index(
+        drop=True
+    )
+    patient_ids_test = (
+        patient_ids_test
+        .astype("string")
+        .reset_index(
+            drop=True
+        )
+    )
+
+    test_index = patient_ids_test.to_frame(
+        name="Patient_ID"
+    )
+
+    raw_test = test_index.merge(
+        analysis.assign(
+            Patient_ID=(
+                analysis["Patient_ID"]
+                .astype("string")
+            )
+        ),
+        on="Patient_ID",
+        how="left",
+        validate="one_to_one",
+    )
+
+    X_test_final = pd.concat(
+        [
+            test_index,
+            X_test[
+                final_cols
+            ].reset_index(
+                drop=True
+            ),
+        ],
+        axis=1,
+    )
+
+    patient_pred = (
+        test_index.merge(
+            raw_predictions,
+            on="Patient_ID",
+            how="left",
+            validate="one_to_one",
+        )
+        .rename(
+            columns={
+                "Observed_MSK_within_1year": "true_msk_1yr",
+                "Predicted_probability": "pred_prob",
+                "Predicted_class": "pred_label",
+            }
+        )
+    )
+
+    if patient_pred[
+        [
+            "true_msk_1yr",
+            "pred_prob",
+            "pred_label",
+        ]
+    ].isna().any().any():
+        raise ValueError(
+            "Canonical predictions do not cover the reconstructed test set."
         )
 
-    selection_cols = ml.expand_feature_columns(
-        X_train,
-        feature_sets[algorithm_selection_feature_set],
+    reconstructed_outcome = (
+        y_test.astype(int)
+        .to_numpy()
+    )
+    saved_outcome = (
+        pd.to_numeric(
+            patient_pred["true_msk_1yr"],
+            errors="raise",
+        )
+        .astype(int)
+        .to_numpy()
     )
 
-    models = ml.make_models(y_train)
-    model_rows = []
+    if not np.array_equal(
+        reconstructed_outcome,
+        saved_outcome,
+    ):
+        raise ValueError(
+            "The reconstructed test-set outcomes differ from the saved "
+            "predictions. Confirm that sensitivity analysis and modeling use "
+            "the same analysis dataframe, SEED, and TEST_SIZE."
+        )
 
-    for model_name, model in models.items():
-        pipeline = ml.make_pipeline_for_model(model_name, model)
-        pipeline.fit(X_train[selection_cols], y_train)
-
-        probabilities = pipeline.predict_proba(
-            X_test[selection_cols]
-        )[:, 1]
-
-        model_rows.append({
-            "Model": model_name,
-            "AUC": safe_auc(y_test, probabilities),
-        })
-
-    model_comparison = (
-        pd.DataFrame(model_rows)
-        .sort_values("AUC", ascending=False)
-        .reset_index(drop=True)
-    )
-    model_comparison.to_csv(
-        table_dir / "00_algorithm_selection_for_sensitivity.csv",
-        index=False,
+    patient_pred["pred_prob"] = pd.to_numeric(
+        patient_pred["pred_prob"],
+        errors="raise",
     )
 
-    best_model_name = str(model_comparison.loc[0, "Model"])
-    best_model = models[best_model_name]
-    print("\nSelected model:", best_model_name)
+    patient_pred["pred_label"] = pd.to_numeric(
+        patient_pred["pred_label"],
+        errors="raise",
+    ).astype(int)
 
-    final_feature_set = "05_Add_MedTrajectory"
-    if final_feature_set not in feature_sets:
-        raise KeyError(f"Feature set not found: {final_feature_set}")
+    patient_pred["true_msk_1yr"] = pd.to_numeric(
+        patient_pred["true_msk_1yr"],
+        errors="raise",
+    ).astype(int)
 
-    final_raw_features = feature_sets[final_feature_set]
-    final_cols = ml.expand_feature_columns(
-        X_train,
-        final_raw_features,
-    )
+    patient_pred["prediction_error"] = (
+        patient_pred["true_msk_1yr"]
+        - patient_pred["pred_prob"]
+    ).abs()
 
-    pd.DataFrame({
-        "Final_Model_Feature": final_cols,
-    }).to_csv(
-        table_dir / "01_final_model_feature_list.csv",
-        index=False,
-    )
+    patient_pred["prediction_margin_from_threshold"] = (
+        patient_pred["pred_prob"]
+        - THRESHOLD
+    ).abs()
 
-    final_pipeline = ml.make_pipeline_for_model(
-        best_model_name,
-        best_model,
-    )
-    final_pipeline.fit(X_train[final_cols], y_train)
-
-    pred_prob = final_pipeline.predict_proba(
-        X_test[final_cols]
-    )[:, 1]
-    pred_label = (pred_prob >= THRESHOLD).astype(int)
-
-    patient_pred = pd.DataFrame({
-        "Patient_ID": (
-            df_1yr.loc[X_test.index, "Patient_ID"]
-            .astype(str)
-            .values
-        ),
-        "true_msk_1yr": y_test.astype(int).values,
-        "pred_prob": pred_prob,
-        "pred_label": pred_label,
-    })
-
-    patient_pred["prediction_error"] = np.abs(
-        patient_pred["true_msk_1yr"] - patient_pred["pred_prob"]
-    )
-    patient_pred["prediction_margin_from_threshold"] = np.abs(
-        patient_pred["pred_prob"] - THRESHOLD
-    )
     patient_pred["correct_prediction"] = (
         patient_pred["true_msk_1yr"]
         == patient_pred["pred_label"]
     ).astype(int)
 
-    patient_pred = add_prediction_type(patient_pred)
-    patient_pred, error_cutoffs = (
-        assign_error_quartiles_and_applicability(patient_pred)
+    patient_pred = add_prediction_type(
+        patient_pred
+    )
+
+    (
+        patient_pred,
+        error_cutoffs,
+    ) = assign_error_quartiles_and_applicability(
+        patient_pred
     )
 
     patient_pred = add_profile_completeness(
-        df_1yr=df_1yr.loc[X_test.index].reset_index(drop=True),
-        X=X_test[final_cols].reset_index(drop=True),
+        df_1yr=raw_test,
+        X=X_test_final[
+            final_cols
+        ],
         patient_pred=patient_pred,
-        raw_feature_cols=final_raw_features,
+        raw_feature_cols=final_cols,
         model_feature_cols=final_cols,
     )
 
+    # Save canonical reconstructed inputs for transparent downstream review.
+    X_test_final.to_csv(
+        table_dir
+        / "00_reconstructed_final_test_feature_matrix.csv",
+        index=False,
+    )
+
+    raw_test.to_csv(
+        table_dir
+        / "01_reconstructed_final_test_raw_data.csv",
+        index=False,
+    )
 
     patient_pred.to_csv(
-        table_dir / "02_patient_level_predictions_with_quartiles.csv",
+        table_dir
+        / "02_patient_level_predictions_with_quartiles.csv",
         index=False,
     )
 
     patient_pred[
-        patient_pred["applicability_group"] == "High applicability"
+        patient_pred["applicability_group"]
+        == "High applicability"
     ].to_csv(
-        table_dir / "03_high_applicability_Q1_patients.csv",
+        table_dir
+        / "03_high_applicability_Q1_patients.csv",
         index=False,
     )
 
@@ -996,87 +1293,117 @@ def run_sensitivity_analysis(
         patient_pred["applicability_group"]
         == "Intermediate applicability"
     ].to_csv(
-        table_dir / "04_intermediate_applicability_Q2_Q3_patients.csv",
+        table_dir
+        / "04_intermediate_applicability_Q2_Q3_patients.csv",
         index=False,
     )
 
     patient_pred[
-        patient_pred["applicability_group"] == "Low applicability"
+        patient_pred["applicability_group"]
+        == "Low applicability"
     ].to_csv(
-        table_dir / "05_low_applicability_Q4_patients.csv",
+        table_dir
+        / "05_low_applicability_Q4_patients.csv",
         index=False,
     )
 
-    cutoff_table = create_error_cutoff_table(error_cutoffs)
+    cutoff_table = create_error_cutoff_table(
+        error_cutoffs
+    )
     cutoff_table.to_csv(
-        table_dir / "06_prediction_error_cutoffs.csv",
+        table_dir
+        / "06_prediction_error_cutoffs.csv",
         index=False,
     )
 
-    quartile_intervals = create_error_quartile_interval_table(
-        patient_pred,
-        error_cutoffs,
+    quartile_intervals = (
+        create_error_quartile_interval_table(
+            patient_pred,
+            error_cutoffs,
+        )
     )
     quartile_intervals.to_csv(
-        table_dir / "07_Q1_Q4_prediction_error_intervals.csv",
+        table_dir
+        / "07_Q1_Q4_prediction_error_intervals.csv",
         index=False,
     )
 
-    quartile_performance = create_quartile_performance_table(
-        patient_pred
+    quartile_performance = (
+        create_quartile_performance_table(
+            patient_pred
+        )
     )
     quartile_performance.to_csv(
-        table_dir / "08_Q1_Q4_performance.csv",
+        table_dir
+        / "08_Q1_Q4_performance.csv",
         index=False,
     )
 
-
-    group_summary = create_group_percentage_table(patient_pred)
+    group_summary = create_group_percentage_table(
+        patient_pred
+    )
     group_summary.to_csv(
-        table_dir / "09_applicability_group_summary.csv",
+        table_dir
+        / "09_applicability_group_summary.csv",
         index=False,
     )
 
-    group_performance = create_group_performance_table(patient_pred)
+    group_performance = (
+        create_group_performance_table(
+            patient_pred
+        )
+    )
     group_performance.to_csv(
-        table_dir / "10_applicability_group_performance.csv",
+        table_dir
+        / "10_applicability_group_performance.csv",
         index=False,
     )
 
-    group_prediction_types = create_prediction_type_distribution(
-        patient_pred,
-        group_column="applicability_group",
-        group_order=APPLICABILITY_ORDER,
+    group_prediction_types = (
+        create_prediction_type_distribution(
+            patient_pred,
+            group_column="applicability_group",
+            group_order=APPLICABILITY_ORDER,
+        )
     )
     group_prediction_types.to_csv(
-        table_dir / "11_prediction_type_distribution_by_group.csv",
+        table_dir
+        / "11_prediction_type_distribution_by_group.csv",
         index=False,
     )
 
-    quartile_prediction_types = create_prediction_type_distribution(
-        patient_pred,
-        group_column="prediction_error_quartile",
-        group_order=QUARTILE_ORDER,
+    quartile_prediction_types = (
+        create_prediction_type_distribution(
+            patient_pred,
+            group_column="prediction_error_quartile",
+            group_order=QUARTILE_ORDER,
+        )
     )
     quartile_prediction_types.to_csv(
-        table_dir / "11b_prediction_type_distribution_by_quartile.csv",
+        table_dir
+        / "11b_prediction_type_distribution_by_quartile.csv",
         index=False,
     )
 
-
-    progressive_removal = create_progressive_error_removal_table(
-        patient_pred
+    progressive_removal = (
+        create_progressive_error_removal_table(
+            patient_pred
+        )
     )
     progressive_removal.to_csv(
-        table_dir / "12_primary_progressive_error_removal_0_to_20pct.csv",
+        table_dir
+        / "12_primary_progressive_error_removal_0_to_20pct.csv",
         index=False,
     )
 
-    exploratory_q4_removal = create_exploratory_q4_removal_table(
-        patient_pred
+    exploratory_q4_removal = (
+        create_exploratory_q4_removal_table(
+            patient_pred
+        )
     )
     exploratory_q4_removal.to_csv(
-        table_dir / "13_exploratory_Q4_removal.csv",
+        table_dir
+        / "13_exploratory_Q4_removal.csv",
         index=False,
     )
 
@@ -1084,15 +1411,18 @@ def run_sensitivity_analysis(
         patient_pred=patient_pred,
         group_a_name="Low",
         group_a_mask=(
-            patient_pred["applicability_group"] == "Low applicability"
+            patient_pred["applicability_group"]
+            == "Low applicability"
         ),
         group_b_name="High",
         group_b_mask=(
-            patient_pred["applicability_group"] == "High applicability"
+            patient_pred["applicability_group"]
+            == "High applicability"
         ),
     )
     low_vs_high.to_csv(
-        table_dir / "14_low_vs_high_characteristics.csv",
+        table_dir
+        / "14_low_vs_high_characteristics.csv",
         index=False,
     )
 
@@ -1100,153 +1430,216 @@ def run_sensitivity_analysis(
         patient_pred=patient_pred,
         group_a_name="Low",
         group_a_mask=(
-            patient_pred["applicability_group"] == "Low applicability"
+            patient_pred["applicability_group"]
+            == "Low applicability"
         ),
         group_b_name="Others",
         group_b_mask=(
-            patient_pred["applicability_group"] != "Low applicability"
+            patient_pred["applicability_group"]
+            != "Low applicability"
         ),
     )
     low_vs_others.to_csv(
-        table_dir / "15_low_vs_others_characteristics.csv",
+        table_dir
+        / "15_low_vs_others_characteristics.csv",
         index=False,
     )
 
-    final_feature_comparison = create_final_feature_group_comparison(
-        patient_pred=patient_pred,
-        X_test_final=X_test[final_cols].reset_index(drop=True),
-        final_cols=final_cols,
+    final_feature_comparison = (
+        create_final_feature_group_comparison(
+            patient_pred=patient_pred,
+            X_test_final=X_test_final[
+                final_cols
+            ].reset_index(
+                drop=True
+            ),
+            final_cols=final_cols,
+        )
     )
     final_feature_comparison.to_csv(
-        table_dir / "16_final_model_feature_group_comparison.csv",
+        table_dir
+        / "16_final_model_feature_group_comparison.csv",
         index=False,
     )
 
     significant_features = final_feature_comparison[
-        final_feature_comparison["Significant_p_lt_0.05"]
+        final_feature_comparison[
+            "Significant_p_lt_0.05"
+        ]
     ].copy()
     significant_features.to_csv(
-        table_dir / "17_significant_final_model_features.csv",
+        table_dir
+        / "17_significant_final_model_features.csv",
         index=False,
     )
-
 
     final_metrics = get_prediction_metrics(
         patient_pred["true_msk_1yr"],
         patient_pred["pred_prob"],
     )
 
-    pd.DataFrame([{
-        "Final_Feature_Set": final_feature_set,
-        "Final_Model": best_model_name,
-        "Classification_Threshold": THRESHOLD,
-        "N_Final_Model_Features": len(final_cols),
-        **final_metrics,
-    }]).to_csv(
-        table_dir / "18_final_patient_level_metrics.csv",
+    pd.DataFrame(
+        [
+            {
+                "Final_Feature_Set": final_feature_set,
+                "Final_Model": best_model_name,
+                "Classification_Threshold": THRESHOLD,
+                "N_Final_Model_Features": len(
+                    final_cols
+                ),
+                **final_metrics,
+            }
+        ]
+    ).to_csv(
+        table_dir
+        / "18_final_patient_level_metrics.csv",
         index=False,
     )
 
-    plot_auc_removal_curve(progressive_removal, figure_dir)
-    plot_group_percentages(group_summary, figure_dir)
+    plot_auc_removal_curve(
+        progressive_removal,
+        figure_dir,
+    )
+    plot_group_percentages(
+        group_summary,
+        figure_dir,
+    )
     plot_prediction_type_distribution(
         group_prediction_types,
         figure_dir,
     )
 
+    # Concise terminal summary only.
+    baseline_row = progressive_removal.loc[
+        progressive_removal["Requested_Removal_Percent"].eq(0)
+    ].iloc[0]
+    removal_20_row = progressive_removal.loc[
+        progressive_removal["Requested_Removal_Percent"].eq(20)
+    ].iloc[0]
 
-    print("\nPrediction-error cutoffs:")
-    print(cutoff_table.to_string(index=False))
+    group_counts = (
+        patient_pred["applicability_group"]
+        .value_counts()
+        .to_dict()
+    )
 
-    print("\nQ1-Q4 prediction-error intervals:")
-    print(quartile_intervals.to_string(index=False))
+    print("\n" + "=" * 72)
+    print("MENTAL → MSK SENSITIVITY ANALYSIS SUMMARY")
+    print("=" * 72)
+    print(f"Test patients        : {len(patient_pred):,}")
+    print(f"Final model          : {best_model_name}")
+    print(f"Final feature set    : {final_feature_set}")
+    print(f"Final predictors     : {len(final_cols)}")
+    print(
+        "Applicability groups : "
+        f"High {group_counts.get('High applicability', 0):,} | "
+        f"Intermediate {group_counts.get('Intermediate applicability', 0):,} | "
+        f"Low {group_counts.get('Low applicability', 0):,}"
+    )
+    print(f"Baseline test AUC    : {baseline_row['AUC']:.3f}")
+    print(
+        "AUC after removing "
+        f"{removal_20_row['Actual_Removal_Percent']:.1f}% highest-error patients"
+        f" : {removal_20_row['AUC']:.3f}"
+    )
+    print("=" * 72)
 
-    print("\nPerformance by Q1-Q4:")
-    print(quartile_performance.to_string(index=False))
-
-    print("\nPerformance by applicability group:")
-    print(group_performance.to_string(index=False))
-
-    print("\nPrimary sensitivity analysis: progressive 0%-20% removal:")
-    print(progressive_removal.to_string(index=False))
-
-    print("\nExploratory benchmark: removal of Q4:")
-    print(exploratory_q4_removal.to_string(index=False))
-
-    print("\nSaved tables to:", table_dir)
-    print("Saved figures to:", figure_dir)
 
 
 
 def parse_args() -> argparse.Namespace:
-    default_root = Path(
-        os.environ.get(
-            "BIOSTAT_ROOT",
-            "/Users/xinyichen/Desktop/BiostatisticsPracticum_Depression",
-        )
+    """
+    Resolve paths from the current mental_msk_prediction repository.
+
+    Running with no arguments is expected from the repository root:
+        python -m mental_msk_prediction.modeling.sensitivity_analysis
+    """
+    package_dir = Path(
+        __file__
+    ).resolve().parents[1]
+
+    project_root = package_dir.parent
+
+    default_ml_script = (
+        package_dir
+        / "modeling"
+        / "ml_modeling.py"
+    )
+
+    default_ml_table_dir = (
+        package_dir
+        / "results"
+        / "tables"
+        / "modeling"
+    )
+
+    default_table_dir = (
+        package_dir
+        / "results"
+        / "tables"
+        / "sensitivity_analysis"
+    )
+
+    default_figure_dir = (
+        package_dir
+        / "results"
+        / "figures"
+        / "sensitivity_analysis"
     )
 
     parser = argparse.ArgumentParser(
         description=(
-            "Prediction-error applicability analysis and progressive 0%-20% "
-            "sensitivity analysis for the final 1-year MSK model."
+            "Sensitivity analysis based on the frozen held-out test "
+            "predictions from the current ml_modeling.py pipeline."
         )
     )
 
     parser.add_argument(
-        "--input",
+        "--ml-script",
         type=Path,
-        default=(
-            default_root
-            / "final_cohort"
-            / "results"
-            / "tables"
-            / "final_analysis_long.csv"
+        default=default_ml_script,
+        help=(
+            "Path to the current ml_modeling.py file."
         ),
-        help="Path to final_analysis_long.csv.",
     )
 
     parser.add_argument(
-        "--ml_script",
+        "--ml-table-dir",
         type=Path,
-        default=default_root / "final_cohort" / "ml_llm.py",
-        help="Path to the main ml_llm.py script.",
+        default=default_ml_table_dir,
+        help=(
+            "Directory containing current modeling output tables."
+        ),
     )
 
     parser.add_argument(
         "--table-dir",
         type=Path,
-        default=(
-            default_root
-            / "final_cohort"
-            / "results"
-            / "tables"
-            / "sensitivity_analysis"
+        default=default_table_dir,
+        help=(
+            "Output directory for sensitivity-analysis tables."
         ),
-        help="Directory in which CSV table outputs will be saved.",
     )
 
     parser.add_argument(
         "--figure-dir",
         type=Path,
-        default=(
-            default_root
-            / "final_cohort"
-            / "results"
-            / "figures"
-            / "sensitivity_analysis"
+        default=default_figure_dir,
+        help=(
+            "Output directory for sensitivity-analysis figures."
         ),
-        help="Directory in which figure outputs will be saved.",
     )
 
     return parser.parse_args()
 
 
+
 def main() -> None:
     args = parse_args()
+
     run_sensitivity_analysis(
-        ml_script=args.ml_script,
-        input_path=args.input,
+        ml_script_path=args.ml_script,
+        ml_table_dir=args.ml_table_dir,
         table_dir=args.table_dir,
         figure_dir=args.figure_dir,
     )
