@@ -1,18 +1,28 @@
+
+data/
+mental_msk_prediction/results/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
 # macOS
 .DS_Store
+__MACOSX/
 
-# virtual environment
-.venv/
+.vscode/
+.idea/
+
+# Environment / local configuration
+.env
 
 # VS Code
 .vscode/
-
-# python cache
-__pycache__/
-*.pyc
-
-# pdf
-*.pdf
 
 # data (raw + cache + output)
 data/*.csv
