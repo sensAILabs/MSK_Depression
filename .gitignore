@@ -1,6 +1,5 @@
 
-data/cleaned
-data1/
+data/
 mental_msk_prediction/results/
 
 # Python cache
