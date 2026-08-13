@@ -45,31 +45,31 @@ FOLLOW_UP_DAYS = 365
 DISPLAY_MAX_DAYS = 365
 
 TRAJECTORY_TYPES = [
-    "Good example",
-    "Normal example",
-    "Bad example 1",
-    "Bad example 2",
+    "Information-Rich Dynamic Trajectory (Good)",
+    "Typical Clinical Trajectory (Normal)",
+    "Limited Medication Information (Bad 1)",
+    "Short Observation Window (Bad 2)",
 ]
 
 LINESTYLES = {
-    "Good example": "-",
-    "Normal example": "--",
-    "Bad example 1": "-.",
-    "Bad example 2": ":",
+    "Information-Rich Dynamic Trajectory (Good)": "-",
+    "Typical Clinical Trajectory (Normal)": "--",
+    "Limited Medication Information (Bad 1)": "-.",
+    "Short Observation Window (Bad 2)": ":",
 }
 
 MARKER_X_OFFSETS = {
-    "Good example": 0.0,
-    "Normal example": 2.5,
-    "Bad example 1": 5.0,
-    "Bad example 2": 7.5,
+    "Information-Rich Dynamic Trajectory (Good)": 0.0,
+    "Typical Clinical Trajectory (Normal)": 2.5,
+    "Limited Medication Information (Bad 1)": 5.0,
+    "Short Observation Window (Bad 2)": 7.5,
 }
 
 PATIENT_COLORS = {
-    "Good example": "#2ca02c",      # green
-    "Normal example": "#1f77b4",    # blue
-    "Bad example 1": "#ff7f0e",     # orange
-    "Bad example 2": "#d62728",     # red
+    "Information-Rich Dynamic Trajectory (Good)": "#2ca02c",      # green
+    "Typical Clinical Trajectory (Normal)": "#1f77b4",    # blue
+    "Limited Medication Information (Bad 1)": "#ff7f0e",     # orange
+    "Short Observation Window (Bad 2)": "#d62728",     # red
 }
 
 # ordinary snapshot = small triangle; frequency/count change = large triangle.
@@ -927,19 +927,19 @@ def select_representative_patients(
     """
     Select four representative trajectories using the final clinical story.
 
-    Good example
+    Information-Rich Dynamic Trajectory (Good)
         High-applicability TP with rich information and multiple trajectory
         changes.
 
-    Normal example
+    Typical Clinical Trajectory (Normal)
         Intermediate-applicability patient with information in all three
         displayed domains, but only a small number of trajectory changes.
 
-    Bad example 1
+    Limited Medication Information (Bad 1)
         Low-applicability FN with no observed medication information before MSK,
         while retaining mental-health information.
 
-    Bad example 2
+    Short Observation Window (Bad 2)
         Low-applicability FN with meaningful observed information, but MSK occurs
         very soon after the first mental-health diagnosis, leaving little time
         for a longitudinal trajectory to develop.
@@ -994,7 +994,7 @@ def select_representative_patients(
         used_ids=used_ids,
     )
 
-    chosen["trajectory_example"] = "Good example"
+    chosen["trajectory_example"] = "Information-Rich Dynamic Trajectory (Good)"
     chosen["selection_rationale"] = (
         "High-applicability true positive with rich longitudinal information "
         "and multiple changes across the displayed clinical domains."
@@ -1126,7 +1126,7 @@ def select_representative_patients(
         used_ids=used_ids,
     )
 
-    chosen["trajectory_example"] = "Normal example"
+    chosen["trajectory_example"] = "Typical Clinical Trajectory (Normal)"
     chosen["selection_rationale"] = (
         "Intermediate-applicability patient with mental, medication, and "
         "comorbidity information and a modest, non-trivial amount of "
@@ -1224,7 +1224,7 @@ def select_representative_patients(
         used_ids=used_ids,
     )
 
-    chosen["trajectory_example"] = "Bad example 1"
+    chosen["trajectory_example"] = "Limited Medication Information (Bad 1)"
     chosen["selection_rationale"] = (
         "Low-applicability false negative with no observable mental- or pain-related "
         "medication information before MSK despite available non-medication information."
@@ -1294,7 +1294,7 @@ def select_representative_patients(
         used_ids=used_ids,
     )
 
-    chosen["trajectory_example"] = "Bad example 2"
+    chosen["trajectory_example"] = "Short Observation Window (Bad 2)"
     chosen["selection_rationale"] = (
         "Low-applicability false negative with observable clinical information "
         "but very rapid progression from the first mental-health diagnosis to "
@@ -2423,8 +2423,7 @@ def plot_representative_trajectories(
         0.5,
         0.012,
         (
-            "Small triangles indicate unchanged consecutive event values; large triangles "
-            "indicate a frequency/count change from the previous event. "
+            " large triangles indicate a frequency/count change from the previous event. "
             "Colored vertical lines indicate first MSK diagnosis."
         ),
         ha="center",

@@ -66,6 +66,7 @@ def get_prediction_metrics(
             "Accuracy": np.nan,
             "Sensitivity": np.nan,
             "Specificity": np.nan,
+            "F1-score": np.nan,
             "PPV": np.nan,
             "NPV": np.nan,
             "TP": 0,
@@ -86,6 +87,11 @@ def get_prediction_metrics(
         "Accuracy": float((tp + tn) / len(y_true)),
         "Sensitivity": tp / (tp + fn) if (tp + fn) > 0 else np.nan,
         "Specificity": tn / (tn + fp) if (tn + fp) > 0 else np.nan,
+        "F1-score": (
+            2 * tp / (2 * tp + fp + fn)
+            if (2 * tp + fp + fn) > 0
+            else np.nan
+        ),
         "PPV": tp / (tp + fp) if (tp + fp) > 0 else np.nan,
         "NPV": tn / (tn + fn) if (tn + fn) > 0 else np.nan,
         "TP": int(tp),
@@ -268,9 +274,6 @@ def add_profile_completeness(
 ) -> pd.DataFrame:
     """
     Attach current patient characteristics and feature-completeness counts.
-
-    The names here match analysis_df_1year.csv and the current 42-predictor
-    final model. No obsolete LLM medication-category fields are requested.
     """
     df_profile = df_1yr.copy().reset_index(drop=True)
     df_profile["Patient_ID"] = df_profile["Patient_ID"].astype(str)
@@ -345,9 +348,7 @@ def add_profile_completeness(
         "Unique_mental_diagnosis_count",
         "Preexisting_condition_count",
         "Multimorbidity_count",
-        "Mental_medication_count",
-        "Pain_medication_count",
-        "Other_medication_count",
+        "Other_medication_class_count",
         "Time_to_first_mental_medication",
         "Time_to_first_pain_medication",
         "Mental_pain_overlap_ratio",
@@ -547,11 +548,7 @@ def create_progressive_error_removal_table(
     Exact rank-based removal avoids unpredictable sample sizes when several
     patients share the same prediction-error value.
 
-    IMPORTANT:
-    This is a retrospective held-out-test-set sensitivity analysis only.
-    prediction_error = |observed outcome - predicted probability| requires the
-    observed one-year outcome and therefore cannot be used prospectively to
-    identify patients for exclusion or applicability screening.
+    prediction_error = |observed outcome - predicted probability| 
     """
     sorted_df = patient_pred.sort_values(
         ["prediction_error", "Patient_ID"],
@@ -731,6 +728,443 @@ def create_final_feature_group_comparison(
     return comparison
 
 
+def create_removed20_vs_retained80_comparison(
+    patient_pred: pd.DataFrame,
+    X_test_final: pd.DataFrame,
+    final_cols: list[str],
+    removal_percent: float = 20.0,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Compare the exact highest-error 20% removed patients with the retained 80%.
+    """
+    sorted_pred = (
+        patient_pred[
+            ["Patient_ID", "prediction_error"]
+        ]
+        .copy()
+        .sort_values(
+            ["prediction_error", "Patient_ID"],
+            ascending=[False, True],
+        )
+        .reset_index(drop=True)
+    )
+
+    total_n = len(sorted_pred)
+    remove_n = int(
+        np.ceil(
+            total_n * removal_percent / 100
+        )
+    )
+
+    removed_ids = set(
+        sorted_pred.iloc[:remove_n]["Patient_ID"]
+        .astype(str)
+        .tolist()
+    )
+
+    group_map = pd.DataFrame(
+        {
+            "Patient_ID": sorted_pred["Patient_ID"].astype(str),
+            "Sensitivity_Group": np.where(
+                sorted_pred["Patient_ID"].astype(str).isin(removed_ids),
+                "Removed 20%",
+                "Retained 80%",
+            ),
+        }
+    )
+
+    feature_df = X_test_final[
+        ["Patient_ID"] + final_cols
+    ].copy()
+
+    feature_df["Patient_ID"] = (
+        feature_df["Patient_ID"]
+        .astype(str)
+    )
+
+    df = feature_df.merge(
+        group_map,
+        on="Patient_ID",
+        how="inner",
+        validate="one_to_one",
+    )
+
+    if len(df) != total_n:
+        raise RuntimeError(
+            "Removed-vs-retained comparison did not recover the full test set."
+        )
+
+    group_order = [
+        "Removed 20%",
+        "Retained 80%",
+    ]
+
+    def fisher_binary(
+        binary_values: pd.Series,
+        groups: pd.Series,
+    ) -> float:
+        contingency = []
+        for group in group_order:
+            group_values = pd.to_numeric(
+                binary_values.loc[
+                    groups.eq(group)
+                ],
+                errors="coerce",
+            ).dropna()
+
+            contingency.append(
+                [
+                    int(group_values.eq(0).sum()),
+                    int(group_values.eq(1).sum()),
+                ]
+            )
+
+        table = np.asarray(
+            contingency,
+            dtype=int,
+        )
+
+        if table.sum() == 0:
+            return np.nan
+
+        try:
+            return float(
+                stats.fisher_exact(
+                    table
+                )[1]
+            )
+        except ValueError:
+            return np.nan
+
+    def mann_whitney(
+        values: pd.Series,
+        groups: pd.Series,
+        positive_only: bool = False,
+    ) -> float:
+        arrays = []
+
+        for group in group_order:
+            group_values = pd.to_numeric(
+                values.loc[
+                    groups.eq(group)
+                ],
+                errors="coerce",
+            ).dropna()
+
+            if positive_only:
+                group_values = group_values.loc[
+                    group_values.gt(0)
+                ]
+
+            arrays.append(
+                group_values
+            )
+
+        if any(
+            len(array) == 0
+            for array in arrays
+        ):
+            return np.nan
+
+        try:
+            return float(
+                stats.mannwhitneyu(
+                    arrays[0],
+                    arrays[1],
+                    alternative="two-sided",
+                ).pvalue
+            )
+        except ValueError:
+            return np.nan
+
+    median_rows = []
+    n_rows = []
+
+    for order, feature in enumerate(
+        final_cols,
+        start=1,
+    ):
+        values = pd.to_numeric(
+            df[feature],
+            errors="coerce",
+        )
+
+        unique_values = set(
+            values.dropna()
+            .unique()
+            .tolist()
+        )
+
+        is_binary = (
+            bool(unique_values)
+            and unique_values.issubset(
+                {0, 1}
+            )
+        )
+
+        # Version 1: median table
+        median_row = {
+            "Order": order,
+            "Feature": feature,
+        }
+
+        if is_binary:
+            median_row["Summary"] = "n (%)"
+
+            for group in group_order:
+                group_values = values.loc[
+                    df["Sensitivity_Group"].eq(group)
+                ].dropna()
+
+                median_row[group] = _format_n_pct(
+                    int(group_values.eq(1).sum()),
+                    len(group_values),
+                )
+
+            p_value = fisher_binary(
+                values,
+                df["Sensitivity_Group"],
+            )
+
+        else:
+            median_row["Summary"] = "Median [IQR]"
+
+            for group in group_order:
+                group_values = values.loc[
+                    df["Sensitivity_Group"].eq(group)
+                ]
+                median_row[group] = _format_median_iqr(
+                    group_values
+                )
+
+            p_value = mann_whitney(
+                values,
+                df["Sensitivity_Group"],
+            )
+
+        median_row["P_value"] = p_value
+        median_row["P_value_formatted"] = _format_p_value(
+            p_value
+        )
+        median_rows.append(
+            median_row
+        )
+
+        # Version 2: n/percentage table
+        is_switch = feature.endswith(
+            "_switch_count"
+        )
+        is_discontinuation = feature.endswith(
+            "_discontinuation_count"
+        )
+
+        if feature == "Mental_pain_overlap_ratio":
+            any_overlap = (
+                values.gt(0)
+                .where(
+                    values.notna(),
+                    np.nan,
+                )
+            )
+
+            overlap_row = {
+                "Order": order,
+                "Feature": "Any mental-pain medication overlap",
+                "Summary": "n (%)",
+            }
+
+            for group in group_order:
+                group_values = values.loc[
+                    df["Sensitivity_Group"].eq(group)
+                ].dropna()
+
+                overlap_row[group] = _format_n_pct(
+                    int(group_values.gt(0).sum()),
+                    len(group_values),
+                )
+
+            overlap_p = fisher_binary(
+                any_overlap,
+                df["Sensitivity_Group"],
+            )
+            overlap_row["P_value"] = overlap_p
+            overlap_row["P_value_formatted"] = _format_p_value(
+                overlap_p
+            )
+            n_rows.append(
+                overlap_row
+            )
+
+            ratio_row = {
+                "Order": order + 0.1,
+                "Feature": (
+                    "Mental-pain overlap ratio among patients with overlap"
+                ),
+                "Summary": "Median [IQR]",
+            }
+
+            for group in group_order:
+                group_values = values.loc[
+                    df["Sensitivity_Group"].eq(group)
+                ].dropna()
+                group_values = group_values.loc[
+                    group_values.gt(0)
+                ]
+
+                ratio_row[group] = _format_median_iqr(
+                    group_values
+                )
+
+            ratio_p = mann_whitney(
+                values,
+                df["Sensitivity_Group"],
+                positive_only=True,
+            )
+            ratio_row["P_value"] = ratio_p
+            ratio_row["P_value_formatted"] = _format_p_value(
+                ratio_p
+            )
+            n_rows.append(
+                ratio_row
+            )
+
+        elif is_switch or is_discontinuation:
+            event_values = (
+                values.gt(0)
+                .where(
+                    values.notna(),
+                    np.nan,
+                )
+            )
+
+            if is_switch:
+                display_name = feature.replace(
+                    "_switch_count",
+                    " (>=1 switch)",
+                )
+            else:
+                display_name = feature.replace(
+                    "_discontinuation_count",
+                    " (>=1 discontinuation)",
+                )
+
+            event_row = {
+                "Order": order,
+                "Feature": display_name,
+                "Summary": "n (%)",
+            }
+
+            for group in group_order:
+                group_values = values.loc[
+                    df["Sensitivity_Group"].eq(group)
+                ].dropna()
+
+                event_row[group] = _format_n_pct(
+                    int(group_values.gt(0).sum()),
+                    len(group_values),
+                )
+
+            event_p = fisher_binary(
+                event_values,
+                df["Sensitivity_Group"],
+            )
+            event_row["P_value"] = event_p
+            event_row["P_value_formatted"] = _format_p_value(
+                event_p
+            )
+            n_rows.append(
+                event_row
+            )
+
+        else:
+            n_row = {
+                "Order": order,
+                "Feature": feature,
+            }
+
+            if is_binary:
+                n_row["Summary"] = "n (%)"
+
+                for group in group_order:
+                    group_values = values.loc[
+                        df["Sensitivity_Group"].eq(group)
+                    ].dropna()
+
+                    n_row[group] = _format_n_pct(
+                        int(group_values.eq(1).sum()),
+                        len(group_values),
+                    )
+
+                n_p = fisher_binary(
+                    values,
+                    df["Sensitivity_Group"],
+                )
+
+            else:
+                n_row["Summary"] = "Median [IQR]"
+
+                for group in group_order:
+                    group_values = values.loc[
+                        df["Sensitivity_Group"].eq(group)
+                    ]
+                    n_row[group] = _format_median_iqr(
+                        group_values
+                    )
+
+                n_p = mann_whitney(
+                    values,
+                    df["Sensitivity_Group"],
+                )
+
+            n_row["P_value"] = n_p
+            n_row["P_value_formatted"] = _format_p_value(
+                n_p
+            )
+            n_rows.append(
+                n_row
+            )
+
+    median_table = pd.DataFrame(
+        median_rows
+    )
+
+    n_table = (
+        pd.DataFrame(
+            n_rows
+        )
+        .sort_values(
+            "Order"
+        )
+        .reset_index(
+            drop=True
+        )
+    )
+
+    # Compact group-size summary for manuscript checking.
+    group_summary = (
+        df["Sensitivity_Group"]
+        .value_counts()
+        .reindex(
+            group_order
+        )
+        .rename_axis(
+            "Group"
+        )
+        .reset_index(
+            name="N"
+        )
+    )
+    group_summary["Percent_of_Test_Set"] = (
+        100.0
+        * group_summary["N"]
+        / len(df)
+    )
+
+    return (
+        median_table,
+        n_table,
+        group_summary,
+    )
 
 def compare_numeric_profiles(
     patient_pred: pd.DataFrame,
@@ -753,9 +1187,7 @@ def compare_numeric_profiles(
         "Unique_mental_diagnosis_count",
         "Preexisting_condition_count",
         "Multimorbidity_count",
-        "Mental_medication_count",
-        "Pain_medication_count",
-        "Other_medication_count",
+        "Other_medication_class_count",
         "Time_to_first_mental_medication",
         "Time_to_first_pain_medication",
         "Mental_pain_overlap_ratio",
@@ -944,13 +1376,15 @@ def run_sensitivity_analysis(
     figure_dir: Path,
 ) -> None:
     """
-    Run sensitivity analyses using the frozen held-out test predictions from
+    Run sensitivity analyses using the held-out test predictions from
     the current ml_modeling.py pipeline.
 
     Current canonical ML outputs:
       - 04_final_model_test_predictions.csv
       - 04_final_model_test_performance.csv
-      - 05_final_model_features.csv
+
+    Final predictor names are read directly from
+    ml_modeling.py FINAL_PRESPECIFIED_FEATURES.
 
     The exact test feature matrix and raw test rows are reconstructed with
     the same analysis file, random seed, test fraction, and stratification
@@ -969,23 +1403,11 @@ def run_sensitivity_analysis(
         ml_script_path
     )
 
-    prediction_path = (
-        ml_table_dir
-        / "04_final_model_test_predictions.csv"
-    )
-    performance_path = (
-        ml_table_dir
-        / "04_final_model_test_performance.csv"
-    )
-    final_feature_path = (
-        ml_table_dir
-        / "05_final_model_features.csv"
-    )
-
+    prediction_path = (ml_table_dir/ "04_final_model_test_predictions.csv")
+    performance_path = (ml_table_dir/ "04_final_model_test_performance.csv")
     required_paths = [
         prediction_path,
         performance_path,
-        final_feature_path,
     ]
 
     missing_paths = [
@@ -1057,24 +1479,14 @@ def run_sensitivity_analysis(
             "04_final_model_test_predictions.csv."
         )
 
-    final_feature_table = pd.read_csv(
-        final_feature_path
-    )
-
-    if "Feature" not in final_feature_table.columns:
-        raise ValueError(
-            "05_final_model_features.csv must contain a Feature column."
-        )
-
-    final_cols = (
-        final_feature_table["Feature"]
-        .astype(str)
-        .tolist()
+    # Use the current final-model feature definition directly from ml_modeling.py.
+    final_cols = list(
+        ml.FINAL_PRESPECIFIED_FEATURES
     )
 
     if not final_cols:
         raise ValueError(
-            "The final-model feature list is empty."
+            "ml_modeling.py FINAL_PRESPECIFIED_FEATURES is empty."
         )
 
     performance = pd.read_csv(
@@ -1093,7 +1505,6 @@ def run_sensitivity_analysis(
         performance.iloc[0]["Model"]
     )
 
-    # Reconstruct the exact held-out test set from the frozen ML definitions.
     analysis = ml.load_analysis_data(
         ml.INPUT_FILE
     )
@@ -1261,24 +1672,9 @@ def run_sensitivity_analysis(
         model_feature_cols=final_cols,
     )
 
-    # Save canonical reconstructed inputs for transparent downstream review.
-    X_test_final.to_csv(
-        table_dir
-        / "00_reconstructed_final_test_feature_matrix.csv",
-        index=False,
-    )
-
-    raw_test.to_csv(
-        table_dir
-        / "01_reconstructed_final_test_raw_data.csv",
-        index=False,
-    )
-
-    patient_pred.to_csv(
-        table_dir
-        / "02_patient_level_predictions_with_quartiles.csv",
-        index=False,
-    )
+    X_test_final.to_csv(table_dir/ "00_reconstructed_final_test_feature_matrix.csv",index=False,)
+    raw_test.to_csv(table_dir/ "01_reconstructed_final_test_raw_data.csv",index=False,)
+    patient_pred.to_csv(table_dir/ "02_patient_level_predictions_with_quartiles.csv",index=False,)
 
     patient_pred[
         patient_pred["applicability_group"]
@@ -1322,42 +1718,23 @@ def run_sensitivity_analysis(
             error_cutoffs,
         )
     )
-    quartile_intervals.to_csv(
-        table_dir
-        / "07_Q1_Q4_prediction_error_intervals.csv",
-        index=False,
-    )
-
+    quartile_intervals.to_csv(table_dir / "07_Q1_Q4_prediction_error_intervals.csv",index=False,)
     quartile_performance = (
         create_quartile_performance_table(
             patient_pred
         )
     )
-    quartile_performance.to_csv(
-        table_dir
-        / "08_Q1_Q4_performance.csv",
-        index=False,
-    )
-
+    quartile_performance.to_csv(table_dir/ "08_Q1_Q4_performance.csv",index=False,)
     group_summary = create_group_percentage_table(
         patient_pred
     )
-    group_summary.to_csv(
-        table_dir
-        / "09_applicability_group_summary.csv",
-        index=False,
-    )
-
+    group_summary.to_csv(table_dir/ "09_applicability_group_summary.csv",index=False,)
     group_performance = (
         create_group_performance_table(
             patient_pred
         )
     )
-    group_performance.to_csv(
-        table_dir
-        / "10_applicability_group_performance.csv",
-        index=False,
-    )
+    group_performance.to_csv(table_dir/ "10_applicability_group_performance.csv",index=False,)
 
     group_prediction_types = (
         create_prediction_type_distribution(
@@ -1393,6 +1770,36 @@ def run_sensitivity_analysis(
     progressive_removal.to_csv(
         table_dir
         / "12_primary_progressive_error_removal_0_to_20pct.csv",
+        index=False,
+    )
+
+
+    (
+        removed20_vs_retained80_median,
+        removed20_vs_retained80_n,
+        removed20_vs_retained80_group_summary,
+    ) = create_removed20_vs_retained80_comparison(
+        patient_pred=patient_pred,
+        X_test_final=X_test_final,
+        final_cols=final_cols,
+        removal_percent=20.0,
+    )
+
+    removed20_vs_retained80_median.to_csv(
+        table_dir
+        / "12b_removed20_vs_retained80_median.csv",
+        index=False,
+    )
+
+    removed20_vs_retained80_n.to_csv(
+        table_dir
+        / "12c_removed20_vs_retained80_n.csv",
+        index=False,
+    )
+
+    removed20_vs_retained80_group_summary.to_csv(
+        table_dir
+        / "12d_removed20_vs_retained80_group_summary.csv",
         index=False,
     )
 
@@ -1509,7 +1916,6 @@ def run_sensitivity_analysis(
         figure_dir,
     )
 
-    # Concise terminal summary only.
     baseline_row = progressive_removal.loc[
         progressive_removal["Requested_Removal_Percent"].eq(0)
     ].iloc[0]
@@ -1548,12 +1954,7 @@ def run_sensitivity_analysis(
 
 
 def parse_args() -> argparse.Namespace:
-    """
-    Resolve paths from the current mental_msk_prediction repository.
-
-    Running with no arguments is expected from the repository root:
-        python -m mental_msk_prediction.modeling.sensitivity_analysis
-    """
+    
     package_dir = Path(
         __file__
     ).resolve().parents[1]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from pathlib import Path
 from typing import Iterable
 
@@ -32,6 +33,27 @@ MIN_CLUSTER_PERCENT = 5.0
 FINAL_FEATURE_SET = "08_Full_Any_Plus_Selected_Trajectory"
 
 PREDICTION_TYPE_ORDER = ["TP", "TN", "FP", "FN"]
+
+
+def import_ml_script(script_path: Path):
+    """Import the current ml_modeling.py without refitting any model."""
+    if not script_path.is_file():
+        raise FileNotFoundError(
+            f"Model script not found: {script_path}"
+        )
+
+    spec = importlib.util.spec_from_file_location(
+        "ml_modeling_module",
+        script_path,
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(
+            f"Could not import model script: {script_path}"
+        )
+
+    ml = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ml)
+    return ml
 
 
 def require_columns(
@@ -83,9 +105,7 @@ def prettify_feature_name(
         "Unique_mental_diagnosis_count": "Unique Mental Diagnosis Count",
         "Preexisting_condition_count": "Pre-existing Condition Count",
         "Multimorbidity_count": "Multimorbidity Count",
-        "Mental_medication_count": "Mental Medication Count",
-        "Pain_medication_count": "Pain Medication Count",
-        "Other_medication_count": "Other Medication Count",
+        "Other_medication_class_count": "Other Medication class Count",
         "Time_to_first_mental_medication": "Time to First Mental Medication",
         "Time_to_first_pain_medication": "Time to First Pain Medication",
         "Mental_pain_overlap_ratio": "Mental-Pain Medication Overlap Ratio",
@@ -117,6 +137,7 @@ def prettify_feature_name(
 
 
 def load_cluster_inputs(
+    ml_script_path: Path,
     ml_table_dir: Path,
     sensitivity_table_dir: Path,
 ) -> tuple[
@@ -128,10 +149,12 @@ def load_cluster_inputs(
     """
     Load the frozen final-model outputs needed for cluster analysis.
 
-    Required modeling outputs
-    -------------------------
+    Final predictor names are read directly from the current ml_modeling.py
+    FINAL_PRESPECIFIED_FEATURES definition.
+
+    Required modeling output
+    ------------------------
     04_final_model_test_performance.csv
-    05_final_model_features.csv
 
     Required sensitivity outputs
     ----------------------------
@@ -140,14 +163,42 @@ def load_cluster_inputs(
 
     No model is refitted in this script.
     """
-    performance_path = ( ml_table_dir/ "04_final_model_test_performance.csv")
-    feature_list_path = (ml_table_dir/ "05_final_model_features.csv")
-    feature_matrix_path = (sensitivity_table_dir/ "00_reconstructed_final_test_feature_matrix.csv")
-    prediction_path = (sensitivity_table_dir/ "02_patient_level_predictions_with_quartiles.csv")
+    ml = import_ml_script(
+        ml_script_path
+    )
+
+    if not hasattr(
+        ml,
+        "FINAL_PRESPECIFIED_FEATURES",
+    ):
+        raise AttributeError(
+            "ml_modeling.py does not define FINAL_PRESPECIFIED_FEATURES."
+        )
+
+    final_features = list(
+        ml.FINAL_PRESPECIFIED_FEATURES
+    )
+
+    if not final_features:
+        raise ValueError(
+            "ml_modeling.py FINAL_PRESPECIFIED_FEATURES is empty."
+        )
+
+    performance_path = (
+        ml_table_dir
+        / "04_final_model_test_performance.csv"
+    )
+    feature_matrix_path = (
+        sensitivity_table_dir
+        / "00_reconstructed_final_test_feature_matrix.csv"
+    )
+    prediction_path = (
+        sensitivity_table_dir
+        / "02_patient_level_predictions_with_quartiles.csv"
+    )
 
     required_paths = [
         performance_path,
-        feature_list_path,
         feature_matrix_path,
         prediction_path,
     ]
@@ -160,20 +211,28 @@ def load_cluster_inputs(
 
     if missing_paths:
         raise FileNotFoundError(
-            "Run the final modeling and sensitivity-analysis pipelines first. "
+            "Run the current modeling and sensitivity-analysis pipelines first. "
             "Missing files: "
-            + ", ".join(str(path) for path in missing_paths)
+            + ", ".join(
+                str(path)
+                for path in missing_paths
+            )
         )
 
-    performance = pd.read_csv(performance_path)
-    feature_list = pd.read_csv(feature_list_path)
+    performance = pd.read_csv(
+        performance_path
+    )
     feature_matrix = pd.read_csv(
         feature_matrix_path,
-        dtype={"Patient_ID": "string"},
+        dtype={
+            "Patient_ID": "string",
+        },
     )
     predictions = pd.read_csv(
         prediction_path,
-        dtype={"Patient_ID": "string"},
+        dtype={
+            "Patient_ID": "string",
+        },
     )
 
     if performance.empty:
@@ -183,30 +242,20 @@ def load_cluster_inputs(
 
     require_columns(
         performance,
-        ["Model", "Feature_Set", "N_features"],
+        [
+            "Model",
+            "Feature_Set",
+            "N_features",
+        ],
         "Final model performance",
     )
 
     require_columns(
-        feature_list,
-        ["Feature"],
-        "Final model feature list",
-    )
-
-    final_features = (
-        feature_list["Feature"]
-        .astype(str)
-        .tolist()
-    )
-
-    if not final_features:
-        raise ValueError(
-            "05_final_model_features.csv contains no predictors."
-        )
-
-    require_columns(
         feature_matrix,
-        ["Patient_ID", *final_features],
+        [
+            "Patient_ID",
+            *final_features,
+        ],
         "Reconstructed final test feature matrix",
     )
 
@@ -227,16 +276,22 @@ def load_cluster_inputs(
         "feature matrix": feature_matrix,
         "patient predictions": predictions,
     }.items():
-        if dataframe["Patient_ID"].duplicated().any():
+        if dataframe[
+            "Patient_ID"
+        ].duplicated().any():
             raise ValueError(
                 f"Patient_ID is duplicated in {name}."
             )
 
     feature_ids = set(
-        feature_matrix["Patient_ID"].astype(str)
+        feature_matrix[
+            "Patient_ID"
+        ].astype(str)
     )
     prediction_ids = set(
-        predictions["Patient_ID"].astype(str)
+        predictions[
+            "Patient_ID"
+        ].astype(str)
     )
 
     if feature_ids != prediction_ids:
@@ -245,48 +300,73 @@ def load_cluster_inputs(
             "matrix and the sensitivity prediction table."
         )
 
-    order = predictions[["Patient_ID"]].copy()
+    order = predictions[
+        [
+            "Patient_ID",
+        ]
+    ].copy()
 
     feature_matrix = order.merge(
         feature_matrix[
-            ["Patient_ID", *final_features]
+            [
+                "Patient_ID",
+                *final_features,
+            ]
         ],
         on="Patient_ID",
         how="left",
         validate="one_to_one",
     )
 
+    reported_n_features = int(
+        performance.iloc[0][
+            "N_features"
+        ]
+    )
+
+    if reported_n_features != len(
+        final_features
+    ):
+        raise ValueError(
+            "Final predictor count is inconsistent between "
+            "ml_modeling.py and 04_final_model_test_performance.csv: "
+            f"{len(final_features)} vs {reported_n_features}."
+        )
+
     metadata = pd.DataFrame(
         [
             {
                 "Final_Model": str(
-                    performance.iloc[0]["Model"]
+                    performance.iloc[0][
+                        "Model"
+                    ]
                 ),
                 "Final_Feature_Set": str(
-                    performance.iloc[0]["Feature_Set"]
+                    performance.iloc[0][
+                        "Feature_Set"
+                    ]
                 ),
                 "N_Final_Model_Features": len(
                     final_features
+                ),
+                "ML_Script": str(
+                    ml_script_path
                 ),
             }
         ]
     )
 
     if (
-        metadata.loc[0, "Final_Feature_Set"]
+        metadata.loc[
+            0,
+            "Final_Feature_Set",
+        ]
         != FINAL_FEATURE_SET
     ):
         raise ValueError(
             "Cluster analysis expected final feature set "
             f"{FINAL_FEATURE_SET!r}, but modeling output reports "
             f"{metadata.loc[0, 'Final_Feature_Set']!r}."
-        )
-
-    if int(
-        metadata.loc[0, "N_Final_Model_Features"]
-    ) != len(final_features):
-        raise ValueError(
-            "Final predictor count is inconsistent between modeling outputs."
         )
 
     return (
@@ -643,8 +723,8 @@ def fit_difficult_patient_clusters(
     #   2) the frozen final-model feature matrix, merged by Patient_ID.
     #
     # This guarantees that each of the final predictors appears exactly once
-    # and that cluster profiling always uses the same 42 predictors as the
-    # final prediction model.
+    # and that cluster profiling always uses the exact predictors defined by
+    # the current final prediction model.
     metadata_columns = [
         "Patient_ID",
         "true_msk_1yr",
@@ -820,213 +900,164 @@ def create_cluster_profile_table(
     final_features: list[str],
 ) -> pd.DataFrame:
     """
-    Create the main cluster phenotype table.
+    Create an interpretable cluster-comparison table.
 
-    Binary variables:
-        n (%) with value = 1; overall cluster comparison by chi-square.
+    Display rule:
+      * Binary features -> n (%) with value = 1.
+      * Sparse event/count features whose median is 0 in every cluster ->
+        n (%) with any event (>0), because median [IQR] hides the difference.
+      * Mental-pain overlap -> two rows: any overlap n (%), plus median [IQR]
+        among patients with overlap (>0).
+      * Other continuous/count features -> median [Q1, Q3].
 
-    Continuous/count variables:
-        median [Q1, Q3]; overall cluster comparison by Kruskal-Wallis.
-
-    P-values are descriptive/exploratory because the same features were used
-    to form the clusters.
+    Overall p-values are descriptive/exploratory because the same features
+    were used to form the clusters.
     """
-    cluster_ids = sorted(
-        clustered_features[
-            "KMeans_Cluster"
-        ].unique()
-    )
+    cluster_ids = sorted(clustered_features["KMeans_Cluster"].unique())
+    rows: list[dict[str, object]] = []
 
-    rows: list[
-        dict[str, object]
-    ] = []
+    def cluster_series(values: pd.Series, cluster_id: int) -> pd.Series:
+        return values[
+            clustered_features["KMeans_Cluster"] == cluster_id
+        ].dropna()
 
-    for feature in final_features:
-        values = pd.to_numeric(
-            clustered_features[
-                feature
-            ],
-            errors="coerce",
-        )
+    def binary_test(indicator: pd.Series) -> tuple[float, float]:
+        contingency = []
+        for cluster_id in cluster_ids:
+            x = cluster_series(indicator, cluster_id)
+            contingency.append([int((x == 0).sum()), int((x == 1).sum())])
+        try:
+            statistic, p_value, _, _ = stats.chi2_contingency(contingency)
+            return float(statistic), float(p_value)
+        except (ValueError, ZeroDivisionError):
+            return np.nan, np.nan
 
-        unique_values = set(
-            values
-            .dropna()
-            .unique()
-            .tolist()
-        )
+    def continuous_test(values: pd.Series, positive_only: bool = False) -> tuple[float, float]:
+        arrays = []
+        for cluster_id in cluster_ids:
+            x = cluster_series(values, cluster_id)
+            if positive_only:
+                x = x[x > 0]
+            if len(x) > 0:
+                arrays.append(x)
+        try:
+            if len(arrays) >= 2:
+                statistic, p_value = stats.kruskal(*arrays)
+                return float(statistic), float(p_value)
+        except ValueError:
+            pass
+        return np.nan, np.nan
 
-        is_binary = (
-            len(unique_values) <= 2
-            and unique_values.issubset(
-                {0, 1}
-            )
-        )
-
-        row: dict[
-            str,
-            object,
-        ] = {
+    def add_n_pct_row(feature: str, display_name: str, values: pd.Series) -> None:
+        indicator = values.gt(0).where(values.notna(), np.nan)
+        row = {
             "Feature": feature,
-            "Display_Feature": (
-                prettify_feature_name(
-                    feature
-                )
-            ),
-            "Feature_Type": (
-                "Binary"
-                if is_binary
-                else "Continuous/count"
+            "Display_Feature": display_name,
+            "Feature_Type": "Any event",
+            "Summary": "n (%) with value > 0",
+        }
+        for cluster_id in cluster_ids:
+            x = cluster_series(values, cluster_id)
+            n = int((x > 0).sum())
+            row[f"Cluster_{int(cluster_id)}"] = (
+                f"{n} ({100 * n / len(x):.1f}%)" if len(x) else "NA"
+            )
+        statistic, p_value = binary_test(indicator)
+        row.update({
+            "Test": "Chi-square",
+            "Statistic": statistic,
+            "P_value": p_value,
+            "P_value_formatted": format_p_value(p_value),
+        })
+        rows.append(row)
+
+    def add_median_row(
+        feature: str,
+        display_name: str,
+        values: pd.Series,
+        positive_only: bool = False,
+    ) -> None:
+        row = {
+            "Feature": feature,
+            "Display_Feature": display_name,
+            "Feature_Type": "Continuous/count",
+            "Summary": (
+                "Median [IQR] among value > 0" if positive_only
+                else "Median [IQR]"
             ),
         }
+        for cluster_id in cluster_ids:
+            x = cluster_series(values, cluster_id)
+            if positive_only:
+                x = x[x > 0]
+            if len(x) == 0:
+                summary = "NA"
+            else:
+                q1, median, q3 = x.quantile([0.25, 0.50, 0.75]).tolist()
+                summary = f"{median:.2f} [{q1:.2f}, {q3:.2f}]"
+            row[f"Cluster_{int(cluster_id)}"] = summary
+        statistic, p_value = continuous_test(values, positive_only=positive_only)
+        row.update({
+            "Test": "Kruskal-Wallis",
+            "Statistic": statistic,
+            "P_value": p_value,
+            "P_value_formatted": format_p_value(p_value),
+        })
+        rows.append(row)
 
+    for feature in final_features:
+        values = pd.to_numeric(clustered_features[feature], errors="coerce")
+        unique_values = set(values.dropna().unique().tolist())
+        is_binary = len(unique_values) <= 2 and unique_values.issubset({0, 1})
+        display_name = prettify_feature_name(feature)
+
+        # Binary predictors are naturally shown as prevalence.
         if is_binary:
-            contingency: list[
-                list[int]
-            ] = []
+            add_n_pct_row(feature, display_name, values)
+            continue
 
-            for cluster_id in cluster_ids:
-                cluster_values = (
-                    values[
-                        clustered_features[
-                            "KMeans_Cluster"
-                        ]
-                        == cluster_id
-                    ]
-                    .dropna()
-                )
+        # Overlap ratio is highly zero-inflated: prevalence answers "whether"
+        # overlap occurs; positive-only median answers "how much" when present.
+        if feature == "Mental_pain_overlap_ratio":
+            add_n_pct_row(
+                feature,
+                "Any Mental-Pain Medication Overlap",
+                values,
+            )
+            add_median_row(
+                feature,
+                "Mental-Pain Medication Overlap Ratio Among Patients With Overlap",
+                values,
+                positive_only=True,
+            )
+            continue
 
-                n_positive = int(
-                    (
-                        cluster_values
-                        == 1
-                    ).sum()
-                )
+        # If every cluster has median 0, median [IQR] usually conceals sparse
+        # but clinically meaningful differences. Show prevalence of >0 instead.
+        cluster_medians = [
+            cluster_series(values, cluster_id).median()
+            for cluster_id in cluster_ids
+        ]
+        medians_all_zero = (
+            len(cluster_medians) > 0
+            and all(pd.notna(m) and np.isclose(float(m), 0.0) for m in cluster_medians)
+        )
 
-                row[
-                    f"Cluster_{int(cluster_id)}"
-                ] = (
-                    f"{n_positive} "
-                    f"({100 * n_positive / len(cluster_values):.1f}%)"
-                    if len(cluster_values) > 0
-                    else "NA"
-                )
-
-                contingency.append(
-                    [
-                        int(
-                            (
-                                cluster_values
-                                == 0
-                            ).sum()
-                        ),
-                        n_positive,
-                    ]
-                )
-
-            try:
-                statistic, p_value, _, _ = (
-                    stats.chi2_contingency(
-                        contingency
-                    )
-                )
-            except (
-                ValueError,
-                ZeroDivisionError,
-            ):
-                statistic = np.nan
-                p_value = np.nan
-
-            test_name = "Chi-square"
-
+        if medians_all_zero:
+            add_n_pct_row(
+                feature,
+                display_name + " (Any)",
+                values,
+            )
         else:
-            arrays: list[
-                pd.Series
-            ] = []
+            add_median_row(feature, display_name, values)
 
-            for cluster_id in cluster_ids:
-                cluster_values = (
-                    values[
-                        clustered_features[
-                            "KMeans_Cluster"
-                        ]
-                        == cluster_id
-                    ]
-                    .dropna()
-                )
-
-                arrays.append(
-                    cluster_values
-                )
-
-                if len(
-                    cluster_values
-                ) == 0:
-                    summary = "NA"
-                else:
-                    q1 = float(
-                        cluster_values.quantile(
-                            0.25
-                        )
-                    )
-                    median = float(
-                        cluster_values.median()
-                    )
-                    q3 = float(
-                        cluster_values.quantile(
-                            0.75
-                        )
-                    )
-
-                    summary = (
-                        f"{median:.2f} "
-                        f"[{q1:.2f}, {q3:.2f}]"
-                    )
-
-                row[
-                    f"Cluster_{int(cluster_id)}"
-                ] = summary
-
-            valid_arrays = [
-                array
-                for array in arrays
-                if len(array) > 0
-            ]
-
-            try:
-                if len(
-                    valid_arrays
-                ) >= 2:
-                    statistic, p_value = (
-                        stats.kruskal(
-                            *valid_arrays
-                        )
-                    )
-                else:
-                    statistic = np.nan
-                    p_value = np.nan
-            except ValueError:
-                statistic = np.nan
-                p_value = np.nan
-
-            test_name = "Kruskal-Wallis"
-
-        row["Test"] = test_name
-        row["Statistic"] = statistic
-        row["P_value"] = p_value
-        row[
-            "P_value_formatted"
-        ] = format_p_value(
-            p_value
+    table = pd.DataFrame(rows)
+    if not table.empty:
+        table["Significant_p_lt_0.05"] = (
+            pd.to_numeric(table["P_value"], errors="coerce") < 0.05
         )
-
-        rows.append(
-            row
-        )
-
-    return pd.DataFrame(
-        rows
-    )
+    return table
 
 
 # Figures
@@ -1249,6 +1280,7 @@ def plot_pca_clusters(
 
 
 def run_cluster_analysis(
+    ml_script_path: Path,
     ml_table_dir: Path,
     sensitivity_table_dir: Path,
     outdir: Path,
@@ -1283,6 +1315,7 @@ def run_cluster_analysis(
         final_features,
         metadata,
     ) = load_cluster_inputs(
+        ml_script_path=ml_script_path,
         ml_table_dir=ml_table_dir,
         sensitivity_table_dir=sensitivity_table_dir,
     )
@@ -1578,6 +1611,20 @@ def parse_args() -> argparse.Namespace:
         )
 
     parser.add_argument(
+        "--ml-script",
+        type=Path,
+        default=(
+            package_dir
+            / "modeling"
+            / "ml_modeling.py"
+        ),
+        help=(
+            "Path to the current ml_modeling.py. "
+            "FINAL_PRESPECIFIED_FEATURES is read directly from this script."
+        ),
+    )
+
+    parser.add_argument(
         "--ml-table-dir",
         type=Path,
         default=(
@@ -1623,6 +1670,7 @@ def main() -> None:
     args = parse_args()
 
     run_cluster_analysis(
+        ml_script_path=args.ml_script,
         ml_table_dir=args.ml_table_dir,
         sensitivity_table_dir=args.sensitivity_table_dir,
         outdir=args.outdir,

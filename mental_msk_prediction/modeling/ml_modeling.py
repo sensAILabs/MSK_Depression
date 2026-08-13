@@ -16,8 +16,8 @@ Main analyses
 4. Sequential feature-set comparison using the best algorithm.
 5. Independent test-set evaluation and DeLong comparisons.
 6. Final-model ROC curve, confusion matrix, and predictions.
-7. Univariate Pearson correlation of every final predictor with the outcome.
-8. SHAP interpretation of every final predictor.
+7. Univariate Pearson correlation of eight demographic/clinical predictors with the outcome.
+8. Medication-focused SHAP interpretation from the full final model.
 9. Pearson correlation matrix for predictors retained in the final model.
 10. Generalization analysis by age group.
 """
@@ -100,9 +100,7 @@ DISEASE_BURDEN_FEATURES = [
     "Multimorbidity_count",
 ]
 MEDICATION_BURDEN_FEATURES = [
-    "Mental_medication_count",
-    "Pain_medication_count",
-    "Other_medication_count",
+    "Other_medication_class_count",
 ]
 ATC_INDICATOR_FEATURES = [
     "Any_Antipsychotics",
@@ -149,6 +147,21 @@ OVERLAP_RATIO_FEATURE = [
     "Mental_pain_overlap_ratio",
 ]
 
+CLINICAL_PEARSON_FEATURES = (
+    DEMOGRAPHIC_FEATURES
+    + MENTAL_HEALTH_FEATURES
+    + DISEASE_BURDEN_FEATURES
+)
+
+MEDICATION_SHAP_FEATURES = (
+    MEDICATION_BURDEN_FEATURES
+    + ATC_INDICATOR_FEATURES
+    + ATC_SWITCH_FEATURES
+    + ATC_DISCONTINUATION_FEATURES
+    + TIME_TO_FIRST_MEDICATION_FEATURES
+    + OVERLAP_RATIO_FEATURE
+)
+
 BASE_CLINICAL_FEATURES = (
     DEMOGRAPHIC_FEATURES
     + MENTAL_HEALTH_FEATURES
@@ -169,7 +182,7 @@ FINAL_PRESPECIFIED_FEATURES = list(
 
 ALL_ANALYSIS_FEATURES = FINAL_PRESPECIFIED_FEATURES
 
-EXPECTED_PREDICTOR_COUNT = 42
+EXPECTED_PREDICTOR_COUNT = 40
 
 if len(FINAL_PRESPECIFIED_FEATURES) != EXPECTED_PREDICTOR_COUNT:
     raise RuntimeError(
@@ -251,9 +264,7 @@ def clean_short_label(
         "Overall_mental_health_visit_count": "Mental_visit_count",
         "Preexisting_condition_count": "Preexisting_count",
         "Multimorbidity_count": "Multimorbidity",
-        "Mental_medication_count": "N_mental_meds",
-        "Pain_medication_count": "N_pain_meds",
-        "Other_medication_count": "N_other_meds",
+       "Other_medication_class_count": "N_other_med_classes",
         "Medication_additions": "Med_additions",
         "Medication_discontinuations": "Med_discontinuations",
         "Mental_pain_overlap_ratio": "Mental_pain_overlap_ratio",
@@ -263,7 +274,6 @@ def clean_short_label(
 
     return (
         label
-        .replace("Any_", "")
         .replace("_initiation_count", "_init")
         .replace("_discontinuation_count", "_disc")
         .replace("_active_days", "_days")
@@ -464,28 +474,28 @@ def build_feature_sets(
             + MEDICATION_BURDEN_FEATURES
             + ATC_INDICATOR_FEATURES
         ),
-        "05_Add_ATC_Discontinuations": (
+        "05_Add_ATC_Switching": (
             BASE_CLINICAL_FEATURES
             + DISEASE_BURDEN_FEATURES
             + MEDICATION_BURDEN_FEATURES
             + ATC_INDICATOR_FEATURES
-            + ATC_DISCONTINUATION_FEATURES
-        ),
-        "06_Add_ATC_Switching": (
-            BASE_CLINICAL_FEATURES
-            + DISEASE_BURDEN_FEATURES
-            + MEDICATION_BURDEN_FEATURES
-            + ATC_INDICATOR_FEATURES
-            + ATC_DISCONTINUATION_FEATURES
             + ATC_SWITCH_FEATURES
+        ),
+        "06_Add_ATC_Discontinuations": (
+            BASE_CLINICAL_FEATURES
+            + DISEASE_BURDEN_FEATURES
+            + MEDICATION_BURDEN_FEATURES
+            + ATC_INDICATOR_FEATURES
+            + ATC_SWITCH_FEATURES
+            + ATC_DISCONTINUATION_FEATURES
         ),
         "07_Add_Time_to_First": (
             BASE_CLINICAL_FEATURES
             + DISEASE_BURDEN_FEATURES
             + MEDICATION_BURDEN_FEATURES
             + ATC_INDICATOR_FEATURES
-            + ATC_DISCONTINUATION_FEATURES
             + ATC_SWITCH_FEATURES
+            + ATC_DISCONTINUATION_FEATURES
             + TIME_TO_FIRST_MEDICATION_FEATURES
         ),
         "08_Full_Any_Plus_Selected_Trajectory": (
@@ -810,18 +820,9 @@ def run_all_variable_correlation(
             ]
         )
 
-    save_csv(
-        high_pairs_df,
-        table_dir
-        / "01_high_correlation_pairs.csv",
-    )
 
 
-
-# ---------------------------------------------------------------------
 # Models and metrics
-# ---------------------------------------------------------------------
-
 def make_models(
     y_train: pd.Series,
 ) -> Dict[str, object]:
@@ -1459,7 +1460,6 @@ def build_delong_table(
     )
 
 
-
 def holm_adjust(
     p_values: Iterable[float],
 ) -> np.ndarray:
@@ -1868,21 +1868,6 @@ def compare_model_families(
         results.iloc[0]["Model"]
     )
 
-    save_csv(
-        results,
-        table_dir
-        / "02_model_comparison.csv",
-    )
-
-    save_csv(
-        pd.concat(
-            fold_tables,
-            ignore_index=True,
-        ),
-        table_dir
-        / "02_model_comparison_cv_folds.csv",
-    )
-
     # Use Logistic Regression as the prespecified statistical reference for
     # pairwise test-set AUC comparisons. Model selection remains based on
     # training cross-validation and is therefore independent of this reference.
@@ -1897,12 +1882,6 @@ def compare_model_families(
         y_test=y_test,
         reference_key=delong_reference_model,
         comparison_label="Model",
-    )
-
-    save_csv(
-        delong_table,
-        table_dir
-        / "02_model_comparison_delong.csv",
     )
 
     performance_matrix = attach_delong_to_performance(
@@ -2057,21 +2036,6 @@ def compare_feature_sets(
         ]
     )
 
-    save_csv(
-        results,
-        table_dir
-        / "03_feature_set_comparison.csv",
-    )
-
-    save_csv(
-        pd.concat(
-            fold_tables,
-            ignore_index=True,
-        ),
-        table_dir
-        / "03_feature_set_comparison_cv_folds.csv",
-    )
-
     # Compare every candidate feature set with the prespecified complete model.
     # The highest-CV feature set is still calculated independently above, but
     # the statistical reference is fixed a priori for consistent reporting.
@@ -2086,12 +2050,6 @@ def compare_feature_sets(
         y_test=y_test,
         reference_key=delong_reference_feature_set,
         comparison_label="Feature_Set",
-    )
-
-    save_csv(
-        delong_table,
-        table_dir
-        / "03_feature_set_comparison_delong.csv",
     )
 
     performance_matrix = attach_delong_to_performance(
@@ -2267,8 +2225,16 @@ def run_shap_analysis(
     figure_dir: Path,
 ) -> None:
     """
-    Create SHAP summary and mean absolute SHAP importance outputs for a
-    tree-based final model.
+    Interpret medication-related predictors using SHAP values from the full
+    final model.
+
+    The model is still the full 40-predictor model. SHAP values are calculated
+    for all final predictors, then the reporting output is restricted to the
+    medication-related predictors defined in MEDICATION_SHAP_FEATURES.
+
+    The CSV contains all medication-related predictors ranked by mean absolute
+    SHAP value. The manuscript beeswarm displays the top 15 medication-related
+    predictors only.
     """
     if not HAS_SHAP:
         print(
@@ -2301,6 +2267,28 @@ def run_shap_analysis(
         .copy()
         .astype(float)
     )
+
+    medication_features = [
+        feature
+        for feature in MEDICATION_SHAP_FEATURES
+        if feature in final_feature_columns
+    ]
+
+    if not medication_features:
+        raise ValueError(
+            "No medication-related predictors were found in the final model."
+        )
+
+    missing_medication_features = [
+        feature
+        for feature in MEDICATION_SHAP_FEATURES
+        if feature not in final_feature_columns
+    ]
+    if missing_medication_features:
+        raise ValueError(
+            "The final model is missing expected medication predictors: "
+            + ", ".join(missing_medication_features)
+        )
 
     try:
         if model_class_name == "XGBClassifier":
@@ -2359,12 +2347,33 @@ def run_shap_analysis(
             else:
                 shap_values = raw_values
 
-        importance = (
+        feature_to_index = {
+            feature: index
+            for index, feature in enumerate(
+                X_explain.columns
+            )
+        }
+
+        medication_indices = [
+            feature_to_index[feature]
+            for feature in medication_features
+        ]
+
+        medication_shap_values = shap_values[
+            :,
+            medication_indices,
+        ]
+
+        X_medication = X_explain[
+            medication_features
+        ].copy()
+
+        medication_importance = (
             pd.DataFrame(
                 {
-                    "Feature": X_explain.columns,
+                    "Feature": medication_features,
                     "Mean_absolute_SHAP": np.abs(
-                        shap_values
+                        medication_shap_values
                     ).mean(
                         axis=0
                     ),
@@ -2379,52 +2388,62 @@ def run_shap_analysis(
             )
         )
 
-        importance.insert(
+        medication_importance.insert(
             0,
             "Rank",
             np.arange(
                 1,
                 len(
-                    importance
+                    medication_importance
                 )
                 + 1,
             ),
         )
 
         save_csv(
-            importance,
+            medication_importance,
             table_dir
-            / "05_all_variable_shap_feature_importance.csv",
+            / "05_medication_shap_feature_importance.csv",
         )
 
-        # Paper-style SHAP beeswarm: keep all 42 predictors in the saved CSV,
-        # but display only the most informative predictors in the figure.
-        shap_plot_features = X_explain.rename(
+        # Top 15 medication-related predictors from SHAP values calculated
+        # within the full 40-predictor final model.
+        shap_plot_features = X_medication.rename(
             columns={
                 feature: clean_short_label(feature)
-                for feature in X_explain.columns
+                for feature in X_medication.columns
             }
         )
 
-        plt.figure(figsize=(9.5, 6.5))
+        plt.figure(
+            figsize=(9.5, 6.5)
+        )
 
         shap.summary_plot(
-            shap_values,
+            medication_shap_values,
             shap_plot_features,
-            max_display=min(15, len(final_feature_columns)),
+            max_display=min(
+                15,
+                len(
+                    medication_features
+                ),
+            ),
             show=False,
             plot_size=None,
         )
 
         shap_figure = plt.gcf()
         shap_axis = shap_figure.axes[0]
+
         shap_axis.grid(
             axis="y",
             linestyle=":",
             linewidth=0.7,
             alpha=0.30,
         )
-        shap_axis.set_axisbelow(True)
+        shap_axis.set_axisbelow(
+            True
+        )
         shap_axis.set_xlabel(
             "SHAP value (impact on model output)",
             fontsize=11,
@@ -2434,7 +2453,7 @@ def run_shap_analysis(
             labelsize=9,
         )
         shap_axis.set_title(
-            "Top Final-Model Predictors by SHAP",
+            "Top Medication-Related Predictors by SHAP",
             fontsize=12,
             pad=10,
         )
@@ -2443,58 +2462,14 @@ def run_shap_analysis(
 
         plt.savefig(
             figure_dir
-            / "05_all_variable_shap_summary_plot.png",
+            / "05_medication_shap_summary_plot.png",
             dpi=300,
             bbox_inches="tight",
         )
 
-        plt.close(shap_figure)
-
-        top_features = (
-            importance
-            .iloc[::-1]
+        plt.close(
+            shap_figure
         )
-
-        fig, ax = plt.subplots(
-            figsize=(
-                10,
-                max(
-                    8,
-                    0.32
-                    * len(
-                        final_feature_columns
-                    ),
-                ),
-            )
-        )
-
-        ax.barh(
-            top_features[
-                "Feature"
-            ],
-            top_features[
-                "Mean_absolute_SHAP"
-            ],
-        )
-
-        ax.set_xlabel(
-            "Mean absolute SHAP value"
-        )
-
-        ax.set_title(
-            "All Final-Model SHAP Feature Importance"
-        )
-
-        plt.tight_layout()
-
-        plt.savefig(
-            figure_dir
-            / "05_all_variable_shap_bar_plot.png",
-            dpi=300,
-            bbox_inches="tight",
-        )
-
-        plt.close(fig)
 
     except Exception as error:
         print(
@@ -2536,116 +2511,595 @@ def _format_continuous_summary(
     return f"{median:.2f} [{q1:.2f}, {q3:.2f}]"
 
 
-def build_final_model_descriptive_table(
+
+def _fisher_p_value(
+    values: pd.Series,
+    y_numeric: pd.Series,
+) -> float:
+    """
+    Fisher's exact p-value for a binary 0/1 variable.
+    """
+    valid = values.notna() & y_numeric.notna()
+
+    binary_values = (
+        pd.to_numeric(
+            values.loc[valid],
+            errors="coerce",
+        )
+        .astype(int)
+    )
+
+    binary_outcome = (
+        y_numeric.loc[valid]
+        .astype(int)
+    )
+
+    contingency = (
+        pd.crosstab(
+            binary_values,
+            binary_outcome,
+        )
+        .reindex(
+            index=[0, 1],
+            columns=[0, 1],
+            fill_value=0,
+        )
+    )
+
+    if contingency.to_numpy().sum() == 0:
+        return np.nan
+
+    _, p_value = stats.fisher_exact(
+        contingency.to_numpy()
+    )
+
+    return float(p_value)
+
+
+def _mannwhitney_p_value(
+    values: pd.Series,
+    y_numeric: pd.Series,
+) -> float:
+    """
+    Two-sided Mann-Whitney U p-value for a numeric variable.
+    """
+    numeric = pd.to_numeric(
+        values,
+        errors="coerce",
+    )
+
+    no_msk = numeric.loc[
+        y_numeric.eq(0)
+    ].dropna()
+
+    msk = numeric.loc[
+        y_numeric.eq(1)
+    ].dropna()
+
+    if no_msk.empty or msk.empty:
+        return np.nan
+
+    _, p_value = stats.mannwhitneyu(
+        no_msk,
+        msk,
+        alternative="two-sided",
+    )
+
+    return float(p_value)
+
+
+def _format_event_summary(
+    values: pd.Series,
+) -> str:
+    """
+    Format a zero-inflated event count as n (%) with at least one event.
+    """
+    numeric = pd.to_numeric(
+        values,
+        errors="coerce",
+    ).dropna()
+
+    if numeric.empty:
+        return ""
+
+    event = numeric.gt(0)
+    n_event = int(event.sum())
+    percentage = 100.0 * n_event / len(numeric)
+
+    return f"{n_event:,} ({percentage:.1f}%)"
+
+
+def _format_positive_continuous_summary(
+    values: pd.Series,
+) -> str:
+    """
+    Median [Q1, Q3] among observations with a value greater than zero.
+    """
+    numeric = pd.to_numeric(
+        values,
+        errors="coerce",
+    ).dropna()
+
+    numeric = numeric.loc[
+        numeric.gt(0)
+    ]
+
+    if numeric.empty:
+        return ""
+
+    median = float(
+        numeric.median()
+    )
+    q1 = float(
+        numeric.quantile(0.25)
+    )
+    q3 = float(
+        numeric.quantile(0.75)
+    )
+
+    return (
+        f"{median:.2f} "
+        f"[{q1:.2f}, {q3:.2f}]"
+    )
+
+
+def _descriptive_section(
+    feature: str,
+) -> str:
+    """
+    Assign each final predictor to a manuscript-friendly clinical domain.
+    """
+    if feature in (
+        DEMOGRAPHIC_FEATURES
+        + MENTAL_HEALTH_FEATURES
+    ):
+        return "Demographic and mental health characteristics"
+
+    if feature in DISEASE_BURDEN_FEATURES:
+        return "Disease burden"
+
+    if (
+        feature in MEDICATION_BURDEN_FEATURES
+        or feature in ATC_INDICATOR_FEATURES
+    ):
+        return "Medication burden and exposure"
+
+    if feature in ATC_DISCONTINUATION_FEATURES:
+        return "Medication discontinuation"
+
+    if feature in ATC_SWITCH_FEATURES:
+        return "Medication switching"
+
+    if (
+        feature in TIME_TO_FIRST_MEDICATION_FEATURES
+        or feature in OVERLAP_RATIO_FEATURE
+    ):
+        return "Medication timing and overlap"
+
+    return "Other"
+
+
+def build_final_model_descriptive_table_conventional(
     X: pd.DataFrame,
     y: pd.Series,
     final_feature_columns: List[str],
     table_dir: Path,
 ) -> pd.DataFrame:
     """
-    Describe every predictor retained in the final prespecified model.
+    Version 1: conventional manuscript descriptive table.
 
-    Binary predictors are summarized as n (%) for value 1. Other numeric
-    predictors are summarized as median [Q1, Q3]. Sex has already been encoded
-    Female=0 and Male=1, so its binary summary is the number and percentage of
-    male patients.
+    Binary predictors are presented as n (%); all other numeric predictors,
+    including switching/discontinuation counts and the overlap ratio, are
+    presented as median [Q1, Q3].
 
-    Group comparisons use Fisher's exact test for binary predictors and the
-    two-sided Mann-Whitney U test for non-binary numeric predictors.
+    Binary comparisons use Fisher's exact test. Numeric comparisons use the
+    two-sided Mann-Whitney U test.
+
+    This table changes reporting only; the final model is unchanged.
     """
-    table_dir.mkdir(parents=True, exist_ok=True)
+    table_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    y_numeric = pd.to_numeric(y, errors="coerce").astype(int)
+    y_numeric = (
+        pd.to_numeric(
+            y,
+            errors="coerce",
+        )
+        .astype(int)
+    )
+
     no_msk_mask = y_numeric.eq(0)
     msk_mask = y_numeric.eq(1)
 
     rows: list[dict[str, object]] = []
 
-    for order, feature in enumerate(final_feature_columns, start=1):
-        values = pd.to_numeric(X[feature], errors="coerce")
+    for order, feature in enumerate(
+        final_feature_columns,
+        start=1,
+    ):
+        values = pd.to_numeric(
+            X[feature],
+            errors="coerce",
+        )
+
         observed = values.dropna()
-        unique_values = set(observed.unique().tolist())
-        is_binary = bool(unique_values) and unique_values.issubset({0, 1})
+        unique_values = set(
+            observed.unique().tolist()
+        )
+
+        is_binary = (
+            bool(unique_values)
+            and unique_values.issubset(
+                {0, 1}
+            )
+        )
 
         if is_binary:
-            feature_type = "Binary"
-            overall_summary = _format_binary_summary(values)
-            no_msk_summary = _format_binary_summary(values.loc[no_msk_mask])
-            msk_summary = _format_binary_summary(values.loc[msk_mask])
+            summary_type = "n (%)"
 
-            valid = values.notna() & y_numeric.notna()
-            binary_values = values.loc[valid].astype(int)
-            binary_outcome = y_numeric.loc[valid].astype(int)
-
-            contingency = pd.crosstab(binary_values, binary_outcome).reindex(
-                index=[0, 1],
-                columns=[0, 1],
-                fill_value=0,
+            overall_summary = _format_binary_summary(
+                values
+            )
+            no_msk_summary = _format_binary_summary(
+                values.loc[
+                    no_msk_mask
+                ]
+            )
+            msk_summary = _format_binary_summary(
+                values.loc[
+                    msk_mask
+                ]
             )
 
-            if contingency.to_numpy().sum() == 0:
-                p_value = np.nan
-            else:
-                _, p_value = stats.fisher_exact(contingency.to_numpy())
+            p_value = _fisher_p_value(
+                values,
+                y_numeric,
+            )
+
         else:
-            feature_type = "Continuous/count"
-            overall_summary = _format_continuous_summary(values)
-            no_msk_summary = _format_continuous_summary(values.loc[no_msk_mask])
-            msk_summary = _format_continuous_summary(values.loc[msk_mask])
+            summary_type = "Median [IQR]"
 
-            group_no_msk = values.loc[no_msk_mask].dropna()
-            group_msk = values.loc[msk_mask].dropna()
+            overall_summary = _format_continuous_summary(
+                values
+            )
+            no_msk_summary = _format_continuous_summary(
+                values.loc[
+                    no_msk_mask
+                ]
+            )
+            msk_summary = _format_continuous_summary(
+                values.loc[
+                    msk_mask
+                ]
+            )
 
-            if group_no_msk.empty or group_msk.empty:
-                p_value = np.nan
-            else:
-                _, p_value = stats.mannwhitneyu(
-                    group_no_msk,
-                    group_msk,
-                    alternative="two-sided",
-                )
+            p_value = _mannwhitney_p_value(
+                values,
+                y_numeric,
+            )
 
         rows.append(
             {
                 "Order": order,
-                "Feature": feature,
-                "Feature_type": feature_type,
+                "Section": _descriptive_section(
+                    feature
+                ),
+                "Variable": feature,
+                "Summary": summary_type,
                 "Overall": overall_summary,
-                "No_MSK_within_1year": no_msk_summary,
-                "MSK_within_1year": msk_summary,
-                "P_value": float(p_value) if pd.notna(p_value) else np.nan,
-                "P_value_formatted": format_p_value(p_value),
+                "No MSK within 1 year": no_msk_summary,
+                "MSK within 1 year": msk_summary,
+                "P value": format_p_value(
+                    p_value
+                ),
             }
         )
 
-    descriptive = pd.DataFrame(rows)
-
-    # Paper-ready column labels while retaining one row per final predictor.
-    descriptive = descriptive.rename(
-        columns={
-            "Order": "Order",
-            "Feature": "Variable",
-            "Feature_type": "Type",
-            "Overall": "Overall",
-            "No_MSK_within_1year": "No MSK within 1 year",
-            "MSK_within_1year": "MSK within 1 year",
-            "P_value": "P_value",
-            "P_value_formatted": "P value",
-        }
+    descriptive = pd.DataFrame(
+        rows
     )
 
-    descriptive_path = table_dir / "05_final_model_descriptive_table.csv"
     save_csv(
         descriptive,
-        descriptive_path,
+        table_dir
+        / "05a_final_model_descriptive_table_conventional.csv",
     )
 
-    # Fail loudly rather than finishing successfully without the requested
-    # manuscript descriptive table.
-    if not descriptive_path.is_file():
-        raise RuntimeError(
-            f"Descriptive table was not created: {descriptive_path}"
+    return descriptive
+
+
+def build_final_model_descriptive_table_adapted(
+    X: pd.DataFrame,
+    y: pd.Series,
+    final_feature_columns: List[str],
+    table_dir: Path,
+) -> pd.DataFrame:
+    """
+    Version 2: study-specific descriptive table adapted for zero-inflated
+    longitudinal medication variables.
+
+    Reporting rules:
+      * Binary predictors: n (%).
+      * Ordinary numeric/count predictors: median [Q1, Q3].
+      * Switching/discontinuation counts: n (%) with >=1 event.
+      * Mental-pain overlap ratio:
+          1) any overlap, n (%);
+          2) ratio among patients with overlap, median [Q1, Q3].
+
+    The original count and continuous variables remain unchanged in the model.
+    Only their descriptive presentation is modified.
+    """
+    table_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    y_numeric = (
+        pd.to_numeric(
+            y,
+            errors="coerce",
         )
+        .astype(int)
+    )
+
+    no_msk_mask = y_numeric.eq(0)
+    msk_mask = y_numeric.eq(1)
+
+    rows: list[dict[str, object]] = []
+    display_order = 0
+
+    for feature in final_feature_columns:
+        values = pd.to_numeric(
+            X[feature],
+            errors="coerce",
+        )
+
+        section = _descriptive_section(
+            feature
+        )
+
+        # ----------------------------------------------------------
+        # Highly zero-inflated switching/discontinuation counts:
+        # present the proportion with at least one event.
+        # ----------------------------------------------------------
+        if (
+            feature in ATC_SWITCH_FEATURES
+            or feature in ATC_DISCONTINUATION_FEATURES
+        ):
+            display_order += 1
+
+            event_values = (
+                values.gt(0)
+                .where(
+                    values.notna(),
+                    np.nan,
+                )
+            )
+
+            p_value = _fisher_p_value(
+                event_values,
+                y_numeric,
+            )
+
+            if feature in ATC_SWITCH_FEATURES:
+                display_name = (
+                    feature
+                    .replace(
+                        "_switch_count",
+                        " (>=1 switch)",
+                    )
+                )
+            else:
+                display_name = (
+                    feature
+                    .replace(
+                        "_discontinuation_count",
+                        " (>=1 discontinuation)",
+                    )
+                )
+
+            rows.append(
+                {
+                    "Order": display_order,
+                    "Section": section,
+                    "Variable": display_name,
+                    "Summary": "n (%)",
+                    "Overall": _format_event_summary(
+                        values
+                    ),
+                    "No MSK within 1 year": _format_event_summary(
+                        values.loc[
+                            no_msk_mask
+                        ]
+                    ),
+                    "MSK within 1 year": _format_event_summary(
+                        values.loc[
+                            msk_mask
+                        ]
+                    ),
+                    "P value": format_p_value(
+                        p_value
+                    ),
+                }
+            )
+
+            continue
+
+        # ----------------------------------------------------------
+        # Zero-inflated overlap ratio:
+        # split descriptive reporting into presence + magnitude.
+        # ----------------------------------------------------------
+        if feature == "Mental_pain_overlap_ratio":
+            display_order += 1
+
+            any_overlap = (
+                values.gt(0)
+                .where(
+                    values.notna(),
+                    np.nan,
+                )
+            )
+
+            any_overlap_p = _fisher_p_value(
+                any_overlap,
+                y_numeric,
+            )
+
+            rows.append(
+                {
+                    "Order": display_order,
+                    "Section": section,
+                    "Variable": "Any mental-pain medication overlap",
+                    "Summary": "n (%)",
+                    "Overall": _format_event_summary(
+                        values
+                    ),
+                    "No MSK within 1 year": _format_event_summary(
+                        values.loc[
+                            no_msk_mask
+                        ]
+                    ),
+                    "MSK within 1 year": _format_event_summary(
+                        values.loc[
+                            msk_mask
+                        ]
+                    ),
+                    "P value": format_p_value(
+                        any_overlap_p
+                    ),
+                }
+            )
+
+            display_order += 1
+
+            # Compare continuous overlap magnitude only among patients
+            # who actually had overlap.
+            positive_values = values.where(
+                values.gt(0)
+            )
+
+            positive_overlap_p = _mannwhitney_p_value(
+                positive_values,
+                y_numeric,
+            )
+
+            rows.append(
+                {
+                    "Order": display_order,
+                    "Section": section,
+                    "Variable": (
+                        "Mental-pain overlap ratio "
+                        "among patients with overlap"
+                    ),
+                    "Summary": "Median [IQR]",
+                    "Overall": _format_positive_continuous_summary(
+                        values
+                    ),
+                    "No MSK within 1 year": _format_positive_continuous_summary(
+                        values.loc[
+                            no_msk_mask
+                        ]
+                    ),
+                    "MSK within 1 year": _format_positive_continuous_summary(
+                        values.loc[
+                            msk_mask
+                        ]
+                    ),
+                    "P value": format_p_value(
+                        positive_overlap_p
+                    ),
+                }
+            )
+
+            continue
+
+        # ----------------------------------------------------------
+        # All other features use their conventional summary.
+        # ----------------------------------------------------------
+        display_order += 1
+
+        observed = values.dropna()
+        unique_values = set(
+            observed.unique().tolist()
+        )
+
+        is_binary = (
+            bool(unique_values)
+            and unique_values.issubset(
+                {0, 1}
+            )
+        )
+
+        if is_binary:
+            summary_type = "n (%)"
+
+            overall_summary = _format_binary_summary(
+                values
+            )
+            no_msk_summary = _format_binary_summary(
+                values.loc[
+                    no_msk_mask
+                ]
+            )
+            msk_summary = _format_binary_summary(
+                values.loc[
+                    msk_mask
+                ]
+            )
+
+            p_value = _fisher_p_value(
+                values,
+                y_numeric,
+            )
+
+        else:
+            summary_type = "Median [IQR]"
+
+            overall_summary = _format_continuous_summary(
+                values
+            )
+            no_msk_summary = _format_continuous_summary(
+                values.loc[
+                    no_msk_mask
+                ]
+            )
+            msk_summary = _format_continuous_summary(
+                values.loc[
+                    msk_mask
+                ]
+            )
+
+            p_value = _mannwhitney_p_value(
+                values,
+                y_numeric,
+            )
+
+        rows.append(
+            {
+                "Order": display_order,
+                "Section": section,
+                "Variable": feature,
+                "Summary": summary_type,
+                "Overall": overall_summary,
+                "No MSK within 1 year": no_msk_summary,
+                "MSK within 1 year": msk_summary,
+                "P value": format_p_value(
+                    p_value
+                ),
+            }
+        )
+
+    descriptive = pd.DataFrame(
+        rows
+    )
+
+    save_csv(
+        descriptive,
+        table_dir
+        / "05b_final_model_descriptive_table_adapted.csv",
+    )
 
     return descriptive
 
@@ -2658,15 +3112,14 @@ def run_feature_outcome_pearson(
     figure_dir: Path,
 ) -> pd.DataFrame:
     """
-    Rank every final-model predictor by its univariate Pearson correlation
-    with the binary one-year MSK outcome.
+    Calculate univariate Pearson correlations between the eight prespecified
+    demographic/clinical predictors and the binary one-year MSK outcome.
 
-    The analysis uses the training set only. This keeps the independent test
-    set reserved for final predictive-performance evaluation.
+    The analysis uses the training set only. Medication predictors are excluded
+    from this Pearson reporting figure because medication-related model
+    interpretation is presented separately with SHAP.
 
-    This is not a replacement for SHAP:
-    * Pearson r is a univariate linear association with the outcome.
-    * Mean absolute SHAP is multivariable model-based importance.
+    This does not alter model training or the final 40-predictor model.
     """
     table_dir.mkdir(
         parents=True,
@@ -2677,6 +3130,29 @@ def run_feature_outcome_pearson(
         exist_ok=True,
     )
 
+    clinical_features = [
+        feature
+        for feature in CLINICAL_PEARSON_FEATURES
+        if feature in final_feature_columns
+    ]
+
+    missing_clinical_features = [
+        feature
+        for feature in CLINICAL_PEARSON_FEATURES
+        if feature not in final_feature_columns
+    ]
+    if missing_clinical_features:
+        raise ValueError(
+            "The final model is missing expected clinical predictors: "
+            + ", ".join(missing_clinical_features)
+        )
+
+    if len(clinical_features) != 8:
+        raise RuntimeError(
+            "Clinical Pearson reporting must contain exactly 8 predictors; "
+            f"observed {len(clinical_features)}."
+        )
+
     y_numeric = pd.to_numeric(
         y_train,
         errors="coerce",
@@ -2684,7 +3160,7 @@ def run_feature_outcome_pearson(
 
     rows: list[dict[str, object]] = []
 
-    for feature in final_feature_columns:
+    for feature in clinical_features:
         values = pd.to_numeric(
             X_train[feature],
             errors="coerce",
@@ -2744,14 +3220,8 @@ def run_feature_outcome_pearson(
             rows
         )
         .sort_values(
-            [
-                "Absolute_Pearson_r",
-                "Feature",
-            ],
-            ascending=[
-                False,
-                True,
-            ],
+            "Pearson_r",
+            ascending=True,
             na_position="last",
         )
         .reset_index(
@@ -2759,46 +3229,20 @@ def run_feature_outcome_pearson(
         )
     )
 
-    results.insert(
-        0,
-        "Rank",
-        np.arange(
-            1,
-            len(
-                results
-            )
-            + 1,
-        ),
-    )
-
     save_csv(
         results,
         table_dir
-        / "07_final_feature_outcome_pearson.csv",
+        / "07_clinical_feature_outcome_pearson.csv",
     )
 
-    # Paper-style association plot: select the 15 strongest univariate
-    # associations by absolute r, then order them by signed r so negative and
-    # positive directions are immediately visible. The CSV still contains all
-    # final-model predictors.
-    plot_data = (
-        results.dropna(
-            subset=[
-                "Pearson_r",
-            ]
-        )
-        .nlargest(
-            min(15, len(results)),
-            "Absolute_Pearson_r",
-        )
-        .sort_values(
+    plot_data = results.dropna(
+        subset=[
             "Pearson_r",
-            ascending=True,
-        )
+        ]
     )
 
     fig, ax = plt.subplots(
-        figsize=(9.0, 6.5)
+        figsize=(8.8, 5.2)
     )
 
     ax.barh(
@@ -2827,17 +3271,19 @@ def run_feature_outcome_pearson(
         linewidth=0.7,
         alpha=0.30,
     )
-    ax.set_axisbelow(True)
+    ax.set_axisbelow(
+        True
+    )
 
     ax.set_xlabel(
-        "Pearson Correlation coefficient (r)",
+        "Pearson correlation coefficient (r)",
         fontsize=11,
     )
     ax.set_ylabel(
         "",
     )
     ax.set_title(
-        "Top final variables with One-Year MSK Outcome",
+        "Clinical Predictors and One-Year MSK Outcome",
         fontsize=12,
         pad=10,
     )
@@ -2850,7 +3296,7 @@ def run_feature_outcome_pearson(
 
     plt.savefig(
         figure_dir
-        / "07_final_feature_outcome_pearson.png",
+        / "07_clinical_feature_outcome_pearson.png",
         dpi=300,
         bbox_inches="tight",
     )
@@ -2924,21 +3370,10 @@ def run_final_model_correlation(
         )
     )
 
-    correlation_matrix.to_csv(
-        table_dir
-        / "08_final_model_correlation_matrix.csv"
-    )
-
     high_pairs = identify_high_correlation_pairs(
         X=X_train,
         feature_columns=non_constant_columns,
         threshold=threshold,
-    )
-
-    save_csv(
-        high_pairs,
-        table_dir
-        / "08_final_model_high_correlation_pairs.csv",
     )
 
     labels = [
@@ -3319,11 +3754,6 @@ def main() -> None:
         feature_columns=final_features,
         threshold=HIGH_CORRELATION_THRESHOLD,
     )
-    save_csv(
-        high_pairs,
-        MODEL_TABLE_DIR / "01_high_correlation_pairs.csv",
-    )
-
     # Full-model algorithm comparison.
     (
         model_results,
@@ -3355,30 +3785,30 @@ def main() -> None:
         figure_dir=MODEL_FIGURE_DIR,
     )
 
-    # The final model remains the prespecified complete feature set.
-    save_csv(
-        pd.DataFrame(
-            {
-                "Feature": final_features,
-                "Order": range(1, len(final_features) + 1),
-            }
-        ),
-        MODEL_TABLE_DIR / "05_final_model_features.csv",
+    descriptive_table_conventional = (
+        build_final_model_descriptive_table_conventional(
+            X=X,
+            y=y,
+            final_feature_columns=final_features,
+            table_dir=MODEL_TABLE_DIR,
+        )
     )
 
-    descriptive_table = build_final_model_descriptive_table(
-        X=X,
-        y=y,
-        final_feature_columns=final_features,
-        table_dir=MODEL_TABLE_DIR,
+    descriptive_table_adapted = (
+        build_final_model_descriptive_table_adapted(
+            X=X,
+            y=y,
+            final_feature_columns=final_features,
+            table_dir=MODEL_TABLE_DIR,
+        )
     )
-    descriptive_table_path = (
-        MODEL_TABLE_DIR / "05_final_model_descriptive_table.csv"
-    )
-    if not descriptive_table_path.is_file() or descriptive_table.empty:
+
+    if (
+        descriptive_table_conventional.empty
+        or descriptive_table_adapted.empty
+    ):
         raise RuntimeError(
-            "Final-model descriptive table was not generated correctly: "
-            f"{descriptive_table_path}"
+            "One or both final-model descriptive tables were not generated."
         )
 
     (
@@ -3429,7 +3859,6 @@ def main() -> None:
         table_dir=MODEL_TABLE_DIR,
         figure_dir=MODEL_FIGURE_DIR,
     )
-
     # Minimal terminal summary; detailed results are saved to CSV/PNG files.
     print("\n" + "=" * 72)
     print("MENTAL → MSK MODELING SUMMARY")

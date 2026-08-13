@@ -96,16 +96,6 @@ MAX_SWITCH_GAP_DAYS = 14
 MAX_SWITCH_OVERLAP_DAYS = 7
 NO_MEDICATION_TIME_SENTINEL = FOLLOW_UP_DAYS + 1
 
-# Internal checkpoints reproduce the original cumulative window idea.
-# Only the final patient-level one-year row is exported.
-INTERNAL_WINDOW_DAYS = [
-    30,
-    90,
-    180,
-    270,
-    365,
-]
-
 SELECTED_DISEASE_SYSTEMS = list(COMORBIDITY_SYSTEMS_MODEL)
 # Final medication feature design.
 # Static exposure (Any_) is retained for all 12 prespecified ATC Level 3
@@ -1365,6 +1355,18 @@ def build_patient_medication_features(
             ].nunique()
         )
 
+        # Number of non-mental/non-pain ATC Level 3 medication classes
+        valid_atc3 = patient_medication[
+            patient_medication["ATC_Level3"].notna()
+        ].copy()
+
+        patient_output["Other_medication_class_count"] = int(
+            valid_atc3.loc[
+                valid_atc3["study_group"].eq("other"),
+                "ATC_Level3",
+            ].nunique()
+        )
+
         # Any exposure to each selected ATC Level 3 group during the window.
         for code in ANY_ATC_CODES:
             suffix = ATC_FEATURE_SUFFIX[code]
@@ -1745,6 +1747,7 @@ def build_final_analysis_dataframe(
         "Mental_medication_count",
         "Pain_medication_count",
         "Other_medication_count",
+        "Other_medication_class_count",
     ]
 
     any_columns = [
@@ -1790,9 +1793,9 @@ def build_final_analysis_dataframe(
         *overlap_columns,
     ]
 
-    if len(predictor_columns) != 42:
+    if len(predictor_columns) != 43:
         raise RuntimeError(
-            "Final predictor definition must contain exactly 42 features; "
+            "Final predictor definition must contain exactly 43 features; "
             f"found {len(predictor_columns)}."
         )
 
@@ -2227,46 +2230,6 @@ def main() -> None:
         f"MSK within one year: "
         f"{analysis['MSK_within_1year'].sum():,} "
         f"({analysis['MSK_within_1year'].mean():.2%})"
-    )
-
-    log.info(
-        "Demographic predictors: 2"
-    )
-
-    log.info(
-        "Mental-health predictors: 4"
-    )
-
-    log.info(
-        "Disease-burden predictors: 2"
-    )
-
-    log.info(
-        "Medication-burden predictors: 3"
-    )
-
-    log.info(
-        "Static ATC Any_ indicators: 12"
-    )
-
-    log.info(
-        "ATC discontinuation predictors: 8"
-    )
-
-    log.info(
-        "ATC switching predictors: 8"
-    )
-    
-    log.info(
-        "Time-to-first-medication predictors: 2"
-    )
-
-    log.info(
-        "Mental-pain overlap predictors: 1"
-    )
-
-    log.info(
-        "Total final predictors: 42"
     )
 
     log.info(
